@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import "./index.css";
+import "./univer.js"; 
 
 const chatRoot = document.getElementById("chat-root");
 if (!chatRoot) {
