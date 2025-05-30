@@ -96,7 +96,10 @@ function App() {
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-      {status === null && chatMessagesHistory.length === 0 && (
+      {/* MODIFIED CONDITION: Show initial loading/error screen if status is null or error. */}
+      {/* This ensures the "Load model" button is visible if not yet loaded or if an error occurred. */}
+      {/* The chatMessagesHistory.length === 0 is now used only for showing the examples */}
+      {(status === null || status === "error") && (
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
             <img
@@ -160,7 +163,8 @@ function App() {
             <button
               className="border px-4 py-2 rounded-lg bg-blue-400 text-white hover:bg-blue-500 disabled:bg-blue-100 disabled:cursor-not-allowed select-none"
               onClick={loadModel} // Use loadModel from context
-              disabled={status !== null || error !== null}
+              // Button is disabled if currently running or loading
+              disabled={isRunning || status === "loading"}
             >
               Load model
             </button>
