@@ -25,25 +25,64 @@ function App() {
   const [error, setError] = useState(null);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isRunning, setIsRunning] = useState(false); // True if any AI generation is happening (chat or sheet)
 
   // Inputs and outputs
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState([]); // Only for chat messages
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
+  // State to track if the current generation is for a spreadsheet cell
+  const [currentAiQueryTargetCell, setCurrentAiQueryTargetCell] = useState(null);
+
   function onEnter(message) {
-    setMessages((prev) => [...prev, { role: "user", content: message }]);
-    setTps(null);
-    setIsRunning(true);
-    setInput("");
+    if (!message.trim()) return; // Don't send empty messages
+
+    // Check if it's an AI sheet command: e.g., "AI:A1: Your prompt here"
+    const aiCommandMatch = message.match(/^AI:([A-Za-z]+\d+):\s*(.*)$/i);
+
+    if (aiCommandMatch) {
+      const targetCell = aiCommandMatch[1].toUpperCase(); // e.g., "A1"
+      const aiPrompt = aiCommandMatch[2].trim();
+
+      if (!aiPrompt) {
+        console.warn("AI command requires a prompt.");
+        return; // Optionally, add a user-facing error message
+      }
+
+      setCurrentAiQueryTargetCell(targetCell); // Store the target cell
+      setIsRunning(true); // Indicate AI is busy
+      setInput(""); // Clear input field
+      setTps(null); // Clear TPS for new operation (as it's not chat-related)
+      setNumTokens(null); // Clear numTokens
+
+      // Send the AI sheet command to the worker
+      worker.current.postMessage({
+        type: "ai_sheet_generate",
+        data: { prompt: aiPrompt, targetCell: targetCell },
+      });
+
+    } else {
+      // It's a regular chat message
+      setMessages((prev) => [...prev, { role: "user", content: message }]); // Add user message to chat history
+      setTps(null);
+      setIsRunning(true);
+      setInput("");
+
+      // Send the entire conversation history (including the just-added user message) to the worker for chat generation
+      worker.current.postMessage({ type: "generate", data: [...messages, { role: "user", content: message }] });
+    }
   }
 
   function onInterrupt() {
-    // NOTE: We do not set isRunning to false here because the worker
-    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
+    // If an AI sheet command was in progress, clear its target to indicate interruption
+    if (currentAiQueryTargetCell) {
+        setCurrentAiQueryTargetCell(null);
+    }
+    // The worker will eventually send a 'complete' status (or 'error' if it truly fails)
+    // which will set isRunning to false.
   }
 
   useEffect(() => {
@@ -72,8 +111,8 @@ function App() {
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
       switch (e.data.status) {
+        // --- General Model Loading/Initialization Statuses ---
         case "loading":
-          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -83,32 +122,30 @@ function App() {
           break;
 
         case "progress":
-          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
                 return { ...item, ...e.data };
               }
               return item;
-            }),
+            })
           );
           break;
 
         case "done":
-          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
-            prev.filter((item) => item.file !== e.data.file),
+            prev.filter((item) => item.file !== e.data.file)
           );
           break;
 
         case "ready":
-          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
-        case "start":
+        // --- Chat-specific handling ---
+        case "chat_start":
           {
-            // Start generation
+            // Start chat generation: add a new assistant message to the chat history
             setMessages((prev) => [
               ...prev,
               { role: "assistant", content: "" },
@@ -116,38 +153,83 @@ function App() {
           }
           break;
 
-        case "update":
+        case "chat_update":
           {
-            // Generation update: update the output text.
-            // Parse messages
+            // Chat generation update: append output to the last assistant message.
             const { output, tps, numTokens } = e.data;
             setTps(tps);
             setNumTokens(numTokens);
             setMessages((prev) => {
               const cloned = [...prev];
               const last = cloned.at(-1);
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: last.content + output,
-              };
+              if (last && last.role === "assistant") { // Ensure we're updating an assistant message
+                cloned[cloned.length - 1] = {
+                  ...last,
+                  content: last.content + output,
+                };
+              } else {
+                  // Fallback: This should ideally not happen if 'chat_start' was processed correctly
+                  cloned.push({ role: "assistant", content: output });
+              }
               return cloned;
             });
           }
           break;
 
-        case "complete":
-          // Generation complete: re-enable the "Generate" button
+        case "chat_complete":
+          // Chat generation complete: disable busy state
           setIsRunning(false);
+          setTps(null); // Clear TPS after chat generation
+          setNumTokens(null);
           break;
+
+        // --- AI Sheet-specific handling ---
+        case "ai_sheet_complete":
+            {
+                const { output, targetCell } = e.data;
+                console.log(`AI Sheet Generation Complete: Output for cell ${targetCell}`, output);
+
+                // IMPORTANT: 'window.univerAPI' must be made available globally by your univer.js script.
+                // Ensure your univer.js file includes: `window.univerAPI = univerAPI;`
+                if (window.univerAPI && targetCell) {
+                    try {
+                        const univer = window.univerAPI.getUniver();
+                        // This assumes you want to modify the currently active sheet.
+                        // You might need more robust logic if you have multiple sheets
+                        // or want to specify the sheet name in the command.
+                        const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
+
+                        // Get the range for the target cell and set its value
+                        sheet.getRange(targetCell).setValue(output);
+                        console.log(`Successfully updated cell ${targetCell} with AI output.`);
+                    } catch (apiError) {
+                        setError(`Failed to update spreadsheet cell ${targetCell}: ${apiError.message}`);
+                        console.error("Univer API error:", apiError);
+                    }
+                } else {
+                    setError("Univer API not available or target cell missing for AI sheet update.");
+                    console.error("Univer API not available or target cell missing.", { univerAPI: window.univerAPI, targetCell });
+                }
+                setCurrentAiQueryTargetCell(null); // Clear the pending target cell
+                setIsRunning(false); // AI generation is complete
+                setTps(null); // Clear TPS and numTokens as these apply to chat
+                setNumTokens(null);
+            }
+            break;
 
         case "error":
           setError(e.data.data);
+          setIsRunning(false); // Error means generation stopped
+          setCurrentAiQueryTargetCell(null); // Clear any pending sheet operations
           break;
       }
     };
 
     const onErrorReceived = (e) => {
       console.error("Worker error:", e);
+      setError(`Worker Error: ${e.message || e.toString()}`);
+      setIsRunning(false); // Error means generation stopped
+      setCurrentAiQueryTargetCell(null); // Clear any pending sheet operations
     };
 
     // Attach the callback function as an event listener.
@@ -159,32 +241,24 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, []); // Empty dependency array means this runs once on mount
 
-  // Send the messages to the worker thread whenever the `messages` state changes.
+  // This useEffect now *only* handles auto-scrolling for the chat window
+  // It only triggers when a new *chat* message is added and generation is ongoing.
   useEffect(() => {
-    if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet: do nothing.
-      return;
-    }
-    if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
-      return;
-    }
-    setTps(null);
-    worker.current.postMessage({ type: "generate", data: messages });
-  }, [messages, isRunning]);
+    if (!chatContainerRef.current) return;
 
-  useEffect(() => {
-    if (!chatContainerRef.current || !isRunning) return;
-    const element = chatContainerRef.current;
-    if (
-      element.scrollHeight - element.scrollTop - element.clientHeight <
-      STICKY_SCROLL_THRESHOLD
-    ) {
-      element.scrollTop = element.scrollHeight;
+    // Only scroll if it's a chat update (i.e., last message is assistant) and we are near the bottom
+    if (messages.length > 0 && messages.at(-1).role === "assistant" && isRunning && !currentAiQueryTargetCell) {
+        const element = chatContainerRef.current;
+        if (
+            element.scrollHeight - element.scrollTop - element.clientHeight <
+            STICKY_SCROLL_THRESHOLD
+        ) {
+            element.scrollTop = element.scrollHeight;
+        }
     }
-  }, [messages, isRunning]);
+  }, [messages, isRunning, currentAiQueryTargetCell]); // Reruns when these states change
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
@@ -284,7 +358,8 @@ function App() {
           className="overflow-y-auto scrollbar-thin w-full flex flex-col items-center h-full"
         >
           <Chat messages={messages} />
-          {messages.length === 0 && (
+          {/* Only show examples if no messages AND no AI query is active */}
+          {messages.length === 0 && !currentAiQueryTargetCell && (
             <div>
               {EXAMPLES.map((msg, i) => (
                 <div
@@ -297,8 +372,17 @@ function App() {
               ))}
             </div>
           )}
+
+          {/* New: Display specific message when AI is working on a spreadsheet query */}
+          {isRunning && currentAiQueryTargetCell && (
+            <p className="text-center text-sm min-h-6 text-blue-500 dark:text-blue-300">
+                Casting AI spell for cell {currentAiQueryTargetCell}...
+            </p>
+          )}
+
           <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300">
-            {tps && messages.length > 0 && (
+            {/* Only show TPS and related info for chat messages, not sheet commands */}
+            {tps && messages.length > 0 && !currentAiQueryTargetCell && (
               <>
                 {!isRunning && (
                   <span>
@@ -306,16 +390,14 @@ function App() {
                     {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
                   </span>
                 )}
-                {
-                  <>
-                    <span className="font-medium text-center mr-1 text-black dark:text-white">
-                      {tps.toFixed(2)}
-                    </span>
-                    <span className="text-gray-500 dark:text-gray-300">
-                      tokens/second
-                    </span>
-                  </>
-                }
+                <>
+                  <span className="font-medium text-center mr-1 text-black dark:text-white">
+                    {tps.toFixed(2)}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-300">
+                    tokens/second
+                  </span>
+                </>
                 {!isRunning && (
                   <>
                     <span className="mr-1">&#41;.</span>
@@ -324,9 +406,11 @@ function App() {
                       onClick={() => {
                         worker.current.postMessage({ type: "reset" });
                         setMessages([]);
+                        setTps(null);
+                        setNumTokens(null);
                       }}
                     >
-                      Reset
+                      Reset Chat
                     </span>
                   </>
                 )}
@@ -340,20 +424,20 @@ function App() {
         <textarea
           ref={textareaRef}
           className="scrollbar-thin w-[550px] dark:bg-gray-700 px-3 py-4 rounded-lg bg-transparent border-none outline-none text-gray-800 disabled:text-gray-400 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 disabled:placeholder-gray-200 resize-none disabled:cursor-not-allowed"
-          placeholder="Type your message..."
+          placeholder="Type your message or AI:A1: Your prompt for cell A1..."
           type="text"
           rows={1}
           value={input}
-          disabled={status !== "ready"}
+          disabled={status !== "ready" || isRunning} // Disable if model not ready or any AI generation is happening
           title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
           onKeyDown={(e) => {
             if (
               input.length > 0 &&
-              !isRunning &&
+              !isRunning && // Only allow sending if not already running
               e.key === "Enter" &&
               !e.shiftKey
             ) {
-              e.preventDefault(); // Prevent default behavior of Enter key
+              e.preventDefault(); // Prevent default behavior of Enter key (new line)
               onEnter(input);
             }
           }}
