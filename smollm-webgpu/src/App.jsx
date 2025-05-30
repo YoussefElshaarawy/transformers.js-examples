@@ -36,10 +36,48 @@ function App() {
   // State to track if the current generation is for a spreadsheet cell
   const [currentAiQueryTargetCell, setCurrentAiQueryTargetCell] = useState(null);
 
+  // --- NEW: Unified function to handle sending AI queries to the worker ---
+  // This function centralizes the state updates (isRunning, tps, numTokens)
+  // and the worker message posting for both chat and spreadsheet AI.
+  const sendAiQueryToWorker = (prompt, targetCell = null, chatHistory = []) => {
+    if (!worker.current || status !== "ready") {
+      setError("AI model not ready to process query.");
+      return;
+    }
+    if (isRunning) {
+      setError("Another AI generation is already in progress.");
+      return;
+    }
+
+    setIsRunning(true); // Indicate AI is busy
+    setInput(""); // Always clear the input field (for chat)
+    setTps(null); // Clear TPS for new operation
+    setNumTokens(null); // Clear numTokens
+
+    if (targetCell) {
+      // It's a spreadsheet query
+      console.log(`Sending AI query for cell ${targetCell}: ${prompt}`);
+      setCurrentAiQueryTargetCell(targetCell); // Store the target cell
+      worker.current.postMessage({
+        type: "ai_sheet_generate",
+        data: { prompt: prompt, targetCell: targetCell },
+      });
+    } else {
+      // It's a regular chat message
+      const newMessage = { role: "user", content: prompt };
+      setMessages((prev) => [...prev, newMessage]); // Add user message to chat history
+      console.log("Sending chat query:", prompt);
+      worker.current.postMessage({
+        type: "generate",
+        data: [...chatHistory, newMessage], // Send the full conversation history
+      });
+    }
+  };
+
   function onEnter(message) {
     if (!message.trim()) return; // Don't send empty messages
 
-    // Check if it's an AI sheet command: e.g., "AI:A1: Your prompt here"
+    // Check if it's an AI sheet command from the chat input: e.g., "AI:A1: Your prompt here"
     const aiCommandMatch = message.match(/^AI:([A-Za-z]+\d+):\s*(.*)$/i);
 
     if (aiCommandMatch) {
@@ -48,30 +86,14 @@ function App() {
 
       if (!aiPrompt) {
         console.warn("AI command requires a prompt.");
-        return; // Optionally, add a user-facing error message
+        setError("AI command requires a prompt."); // User-facing error
+        return;
       }
-
-      setCurrentAiQueryTargetCell(targetCell); // Store the target cell
-      setIsRunning(true); // Indicate AI is busy
-      setInput(""); // Clear input field
-      setTps(null); // Clear TPS for new operation (as it's not chat-related)
-      setNumTokens(null); // Clear numTokens
-
-      // Send the AI sheet command to the worker
-      worker.current.postMessage({
-        type: "ai_sheet_generate",
-        data: { prompt: aiPrompt, targetCell: targetCell },
-      });
+      sendAiQueryToWorker(aiPrompt, targetCell); // Use the unified function
 
     } else {
       // It's a regular chat message
-      setMessages((prev) => [...prev, { role: "user", content: message }]); // Add user message to chat history
-      setTps(null);
-      setIsRunning(true);
-      setInput("");
-
-      // Send the entire conversation history (including the just-added user message) to the worker for chat generation
-      worker.current.postMessage({ type: "generate", data: [...messages, { role: "user", content: message }] });
+      sendAiQueryToWorker(message, null, messages); // Use the unified function, passing current messages
     }
   }
 
@@ -79,7 +101,7 @@ function App() {
     worker.current.postMessage({ type: "interrupt" });
     // If an AI sheet command was in progress, clear its target to indicate interruption
     if (currentAiQueryTargetCell) {
-        setCurrentAiQueryTargetCell(null);
+      setCurrentAiQueryTargetCell(null);
     }
     // The worker will eventually send a 'complete' status (or 'error' if it truly fails)
     // which will set isRunning to false.
@@ -107,6 +129,42 @@ function App() {
       });
       worker.current.postMessage({ type: "check" }); // Do a feature check
     }
+
+    // --- NEW: Define the global function for UniverJS to call for AI_FILL ---
+    // This connects the spreadsheet formula to your React app's AI handling logic.
+    window.triggerAICellFill = (prompt, targetCell) => {
+      if (!prompt || !targetCell) {
+        console.warn("AI_FILL: Missing prompt or target cell.");
+        setError("AI_FILL: Invalid input for formula.");
+        // Try to update the cell with an error message
+        if (window.univerAPI && targetCell) {
+          try {
+            const univer = window.univerAPI.getUniver();
+            const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
+            sheet.getRange(targetCell).setValue("ERROR: Invalid AI_FILL input");
+          } catch (apiError) {
+            console.error("Failed to update cell with error:", apiError);
+          }
+        }
+        return;
+      }
+
+      // Use the unified function to send the query.
+      // For AI_FILL, there's no chat history involved, so pass null for that.
+      sendAiQueryToWorker(prompt, targetCell);
+
+      // Immediately update the cell with a "Calculating..." message
+      if (window.univerAPI && targetCell) {
+          try {
+              const univer = window.univerAPI.getUniver();
+              const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
+              sheet.getRange(targetCell).setValue("Calculating...");
+          } catch (apiError) {
+              console.error("Failed to set 'Calculating...' in cell:", apiError);
+          }
+      }
+    };
+
 
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
@@ -205,6 +263,16 @@ function App() {
                     } catch (apiError) {
                         setError(`Failed to update spreadsheet cell ${targetCell}: ${apiError.message}`);
                         console.error("Univer API error:", apiError);
+                        // If cell update fails, try to set the error in the cell itself
+                        if (window.univerAPI && targetCell) {
+                            try {
+                                const univer = window.univerAPI.getUniver();
+                                const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
+                                sheet.getRange(targetCell).setValue(`ERROR: ${apiError.message}`);
+                            } catch (fallbackError) {
+                                console.error("Failed to set cell error on secondary attempt:", fallbackError);
+                            }
+                        }
                     }
                 } else {
                     setError("Univer API not available or target cell missing for AI sheet update.");
@@ -220,6 +288,16 @@ function App() {
         case "error":
           setError(e.data.data);
           setIsRunning(false); // Error means generation stopped
+          // If a sheet query was in progress, try to update the cell with an error message
+          if (currentAiQueryTargetCell && window.univerAPI) {
+            try {
+              const univer = window.univerAPI.getUniver();
+              const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
+              sheet.getRange(currentAiQueryTargetCell).setValue(`ERROR: ${e.data.data}`);
+            } catch (apiError) {
+              console.error("Failed to update cell with worker error:", apiError);
+            }
+          }
           setCurrentAiQueryTargetCell(null); // Clear any pending sheet operations
           break;
       }
@@ -229,6 +307,16 @@ function App() {
       console.error("Worker error:", e);
       setError(`Worker Error: ${e.message || e.toString()}`);
       setIsRunning(false); // Error means generation stopped
+      // If a sheet query was in progress, try to update the cell with an error message
+      if (currentAiQueryTargetCell && window.univerAPI) {
+        try {
+          const univer = window.univerAPI.getUniver();
+          const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
+          sheet.getRange(currentAiQueryTargetCell).setValue(`ERROR: Worker Error`);
+        } catch (apiError) {
+          console.error("Failed to update cell with worker error:", apiError);
+        }
+      }
       setCurrentAiQueryTargetCell(null); // Clear any pending sheet operations
     };
 
@@ -240,8 +328,10 @@ function App() {
     return () => {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
+      // Clean up the global function when component unmounts
+      delete window.triggerAICellFill;
     };
-  }, []); // Empty dependency array means this runs once on mount
+  }, [status, isRunning, messages]); // Dependencies adjusted for `sendAiQueryToWorker` and `window.triggerAICellFill` scope
 
   // This useEffect now *only* handles auto-scrolling for the chat window
   // It only triggers when a new *chat* message is added and generation is ongoing.
