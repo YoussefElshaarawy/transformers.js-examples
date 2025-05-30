@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from "react";
+import { useWorker } from "./contexts/WorkerContext"; // Import the custom hook
 
 import Chat from "./components/Chat";
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
-import Progress from "./components/Progress";
+import Progress from "./components/Progress"; // Still needed for loading progress display
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -14,70 +15,33 @@ const EXAMPLES = [
 ];
 
 function App() {
-  // Create a reference to the worker object.
-  const worker = useRef(null);
+  // Consume the worker context
+  const {
+    status,
+    error,
+    loadingMessage,
+    progressItems,
+    isRunning,
+    tps,
+    numTokens,
+    currentAiQueryTargetCell,
+    chatMessagesHistory, // This is the chat history managed by the context
+    sendAiQueryToWorker, // The unified function to send AI queries
+    onInterrupt,
+    resetChat,
+    loadModel, // Function to trigger model loading
+  } = useWorker();
 
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
 
-  // Model loading and progress
-  const [status, setStatus] = useState(null);
-  const [error, setError] = useState(null);
-  const [loadingMessage, setLoadingMessage] = useState("");
-  const [progressItems, setProgressItems] = useState([]);
-  const [isRunning, setIsRunning] = useState(false); // True if any AI generation is happening (chat or sheet)
-
-  // Inputs and outputs
+  // Local state for the input field (still managed by App.jsx)
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState([]); // Only for chat messages
-  const [tps, setTps] = useState(null);
-  const [numTokens, setNumTokens] = useState(null);
-
-  // State to track if the current generation is for a spreadsheet cell
-  const [currentAiQueryTargetCell, setCurrentAiQueryTargetCell] = useState(null);
-
-  // --- NEW: Unified function to handle sending AI queries to the worker ---
-  // This function centralizes the state updates (isRunning, tps, numTokens)
-  // and the worker message posting for both chat and spreadsheet AI.
-  const sendAiQueryToWorker = (prompt, targetCell = null, chatHistory = []) => {
-    if (!worker.current || status !== "ready") {
-      setError("AI model not ready to process query.");
-      return;
-    }
-    if (isRunning) {
-      setError("Another AI generation is already in progress.");
-      return;
-    }
-
-    setIsRunning(true); // Indicate AI is busy
-    setInput(""); // Always clear the input field (for chat)
-    setTps(null); // Clear TPS for new operation
-    setNumTokens(null); // Clear numTokens
-
-    if (targetCell) {
-      // It's a spreadsheet query
-      console.log(`Sending AI query for cell ${targetCell}: ${prompt}`);
-      setCurrentAiQueryTargetCell(targetCell); // Store the target cell
-      worker.current.postMessage({
-        type: "ai_sheet_generate",
-        data: { prompt: prompt, targetCell: targetCell },
-      });
-    } else {
-      // It's a regular chat message
-      const newMessage = { role: "user", content: prompt };
-      setMessages((prev) => [...prev, newMessage]); // Add user message to chat history
-      console.log("Sending chat query:", prompt);
-      worker.current.postMessage({
-        type: "generate",
-        data: [...chatHistory, newMessage], // Send the full conversation history
-      });
-    }
-  };
 
   function onEnter(message) {
     if (!message.trim()) return; // Don't send empty messages
 
-    // Check if it's an AI sheet command from the chat input: e.g., "AI:A1: Your prompt here"
+    // Check if it's an AI sheet command: e.g., "AI:A1: Your prompt here"
     const aiCommandMatch = message.match(/^AI:([A-Za-z]+\d+):\s*(.*)$/i);
 
     if (aiCommandMatch) {
@@ -86,25 +50,17 @@ function App() {
 
       if (!aiPrompt) {
         console.warn("AI command requires a prompt.");
-        setError("AI command requires a prompt."); // User-facing error
+        // Error handling for UI can be done via context's `setError` if needed
         return;
       }
       sendAiQueryToWorker(aiPrompt, targetCell); // Use the unified function
+      setInput(""); // Clear input after sending
 
     } else {
       // It's a regular chat message
-      sendAiQueryToWorker(message, null, messages); // Use the unified function, passing current messages
+      sendAiQueryToWorker(message, null); // Use the unified function for chat
+      setInput(""); // Clear input after sending
     }
-  }
-
-  function onInterrupt() {
-    worker.current.postMessage({ type: "interrupt" });
-    // If an AI sheet command was in progress, clear its target to indicate interruption
-    if (currentAiQueryTargetCell) {
-      setCurrentAiQueryTargetCell(null);
-    }
-    // The worker will eventually send a 'complete' status (or 'error' if it truly fails)
-    // which will set isRunning to false.
   }
 
   useEffect(() => {
@@ -120,226 +76,14 @@ function App() {
     target.style.height = `${newHeight}px`;
   }
 
-  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
-  useEffect(() => {
-    // Create the worker if it does not yet exist.
-    if (!worker.current) {
-      worker.current = new Worker(new URL("./worker.js", import.meta.url), {
-        type: "module",
-      });
-      worker.current.postMessage({ type: "check" }); // Do a feature check
-    }
-
-    // --- NEW: Define the global function for UniverJS to call for AI_FILL ---
-    // This connects the spreadsheet formula to your React app's AI handling logic.
-    window.triggerAICellFill = (prompt, targetCell) => {
-      if (!prompt || !targetCell) {
-        console.warn("AI_FILL: Missing prompt or target cell.");
-        setError("AI_FILL: Invalid input for formula.");
-        // Try to update the cell with an error message
-        if (window.univerAPI && targetCell) {
-          try {
-            const univer = window.univerAPI.getUniver();
-            const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
-            sheet.getRange(targetCell).setValue("ERROR: Invalid AI_FILL input");
-          } catch (apiError) {
-            console.error("Failed to update cell with error:", apiError);
-          }
-        }
-        return;
-      }
-
-      // Use the unified function to send the query.
-      // For AI_FILL, there's no chat history involved, so pass null for that.
-      sendAiQueryToWorker(prompt, targetCell);
-
-      // Immediately update the cell with a "Calculating..." message
-      if (window.univerAPI && targetCell) {
-          try {
-              const univer = window.univerAPI.getUniver();
-              const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
-              sheet.getRange(targetCell).setValue("Calculating...");
-          } catch (apiError) {
-              console.error("Failed to set 'Calculating...' in cell:", apiError);
-          }
-      }
-    };
-
-
-    // Create a callback function for messages from the worker thread.
-    const onMessageReceived = (e) => {
-      switch (e.data.status) {
-        // --- General Model Loading/Initialization Statuses ---
-        case "loading":
-          setStatus("loading");
-          setLoadingMessage(e.data.data);
-          break;
-
-        case "initiate":
-          setProgressItems((prev) => [...prev, e.data]);
-          break;
-
-        case "progress":
-          setProgressItems((prev) =>
-            prev.map((item) => {
-              if (item.file === e.data.file) {
-                return { ...item, ...e.data };
-              }
-              return item;
-            })
-          );
-          break;
-
-        case "done":
-          setProgressItems((prev) =>
-            prev.filter((item) => item.file !== e.data.file)
-          );
-          break;
-
-        case "ready":
-          setStatus("ready");
-          break;
-
-        // --- Chat-specific handling ---
-        case "chat_start":
-          {
-            // Start chat generation: add a new assistant message to the chat history
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", content: "" },
-            ]);
-          }
-          break;
-
-        case "chat_update":
-          {
-            // Chat generation update: append output to the last assistant message.
-            const { output, tps, numTokens } = e.data;
-            setTps(tps);
-            setNumTokens(numTokens);
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              if (last && last.role === "assistant") { // Ensure we're updating an assistant message
-                cloned[cloned.length - 1] = {
-                  ...last,
-                  content: last.content + output,
-                };
-              } else {
-                  // Fallback: This should ideally not happen if 'chat_start' was processed correctly
-                  cloned.push({ role: "assistant", content: output });
-              }
-              return cloned;
-            });
-          }
-          break;
-
-        case "chat_complete":
-          // Chat generation complete: disable busy state
-          setIsRunning(false);
-          setTps(null); // Clear TPS after chat generation
-          setNumTokens(null);
-          break;
-
-        // --- AI Sheet-specific handling ---
-        case "ai_sheet_complete":
-            {
-                const { output, targetCell } = e.data;
-                console.log(`AI Sheet Generation Complete: Output for cell ${targetCell}`, output);
-
-                // IMPORTANT: 'window.univerAPI' must be made available globally by your univer.js script.
-                // Ensure your univer.js file includes: `window.univerAPI = univerAPI;`
-                if (window.univerAPI && targetCell) {
-                    try {
-                        const univer = window.univerAPI.getUniver();
-                        // This assumes you want to modify the currently active sheet.
-                        // You might need more robust logic if you have multiple sheets
-                        // or want to specify the sheet name in the command.
-                        const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
-
-                        // Get the range for the target cell and set its value
-                        sheet.getRange(targetCell).setValue(output);
-                        console.log(`Successfully updated cell ${targetCell} with AI output.`);
-                    } catch (apiError) {
-                        setError(`Failed to update spreadsheet cell ${targetCell}: ${apiError.message}`);
-                        console.error("Univer API error:", apiError);
-                        // If cell update fails, try to set the error in the cell itself
-                        if (window.univerAPI && targetCell) {
-                            try {
-                                const univer = window.univerAPI.getUniver();
-                                const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
-                                sheet.getRange(targetCell).setValue(`ERROR: ${apiError.message}`);
-                            } catch (fallbackError) {
-                                console.error("Failed to set cell error on secondary attempt:", fallbackError);
-                            }
-                        }
-                    }
-                } else {
-                    setError("Univer API not available or target cell missing for AI sheet update.");
-                    console.error("Univer API not available or target cell missing.", { univerAPI: window.univerAPI, targetCell });
-                }
-                setCurrentAiQueryTargetCell(null); // Clear the pending target cell
-                setIsRunning(false); // AI generation is complete
-                setTps(null); // Clear TPS and numTokens as these apply to chat
-                setNumTokens(null);
-            }
-            break;
-
-        case "error":
-          setError(e.data.data);
-          setIsRunning(false); // Error means generation stopped
-          // If a sheet query was in progress, try to update the cell with an error message
-          if (currentAiQueryTargetCell && window.univerAPI) {
-            try {
-              const univer = window.univerAPI.getUniver();
-              const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
-              sheet.getRange(currentAiQueryTargetCell).setValue(`ERROR: ${e.data.data}`);
-            } catch (apiError) {
-              console.error("Failed to update cell with worker error:", apiError);
-            }
-          }
-          setCurrentAiQueryTargetCell(null); // Clear any pending sheet operations
-          break;
-      }
-    };
-
-    const onErrorReceived = (e) => {
-      console.error("Worker error:", e);
-      setError(`Worker Error: ${e.message || e.toString()}`);
-      setIsRunning(false); // Error means generation stopped
-      // If a sheet query was in progress, try to update the cell with an error message
-      if (currentAiQueryTargetCell && window.univerAPI) {
-        try {
-          const univer = window.univerAPI.getUniver();
-          const sheet = univer.getCurrentUniverSheetInstance().getActiveSheet();
-          sheet.getRange(currentAiQueryTargetCell).setValue(`ERROR: Worker Error`);
-        } catch (apiError) {
-          console.error("Failed to update cell with worker error:", apiError);
-        }
-      }
-      setCurrentAiQueryTargetCell(null); // Clear any pending sheet operations
-    };
-
-    // Attach the callback function as an event listener.
-    worker.current.addEventListener("message", onMessageReceived);
-    worker.current.addEventListener("error", onErrorReceived);
-
-    // Define a cleanup function for when the component is unmounted.
-    return () => {
-      worker.current.removeEventListener("message", onMessageReceived);
-      worker.current.removeEventListener("error", onErrorReceived);
-      // Clean up the global function when component unmounts
-      delete window.triggerAICellFill;
-    };
-  }, [status, isRunning, messages]); // Dependencies adjusted for `sendAiQueryToWorker` and `window.triggerAICellFill` scope
-
   // This useEffect now *only* handles auto-scrolling for the chat window
   // It only triggers when a new *chat* message is added and generation is ongoing.
   useEffect(() => {
     if (!chatContainerRef.current) return;
 
     // Only scroll if it's a chat update (i.e., last message is assistant) and we are near the bottom
-    if (messages.length > 0 && messages.at(-1).role === "assistant" && isRunning && !currentAiQueryTargetCell) {
+    // `chatMessagesHistory` is now from context
+    if (chatMessagesHistory.length > 0 && chatMessagesHistory.at(-1).role === "assistant" && isRunning && !currentAiQueryTargetCell) {
         const element = chatContainerRef.current;
         if (
             element.scrollHeight - element.scrollTop - element.clientHeight <
@@ -348,11 +92,11 @@ function App() {
             element.scrollTop = element.scrollHeight;
         }
     }
-  }, [messages, isRunning, currentAiQueryTargetCell]); // Reruns when these states change
+  }, [chatMessagesHistory, isRunning, currentAiQueryTargetCell]); // Reruns when these states change
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-      {status === null && messages.length === 0 && (
+      {status === null && chatMessagesHistory.length === 0 && (
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
             <img
@@ -415,10 +159,7 @@ function App() {
 
             <button
               className="border px-4 py-2 rounded-lg bg-blue-400 text-white hover:bg-blue-500 disabled:bg-blue-100 disabled:cursor-not-allowed select-none"
-              onClick={() => {
-                worker.current.postMessage({ type: "load" });
-                setStatus("loading");
-              }}
+              onClick={loadModel} // Use loadModel from context
               disabled={status !== null || error !== null}
             >
               Load model
@@ -447,9 +188,9 @@ function App() {
           ref={chatContainerRef}
           className="overflow-y-auto scrollbar-thin w-full flex flex-col items-center h-full"
         >
-          <Chat messages={messages} />
+          <Chat messages={chatMessagesHistory} /> {/* Use chatMessagesHistory from context */}
           {/* Only show examples if no messages AND no AI query is active */}
-          {messages.length === 0 && !currentAiQueryTargetCell && (
+          {chatMessagesHistory.length === 0 && !currentAiQueryTargetCell && (
             <div>
               {EXAMPLES.map((msg, i) => (
                 <div
@@ -472,7 +213,7 @@ function App() {
 
           <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300">
             {/* Only show TPS and related info for chat messages, not sheet commands */}
-            {tps && messages.length > 0 && !currentAiQueryTargetCell && (
+            {tps && chatMessagesHistory.length > 0 && !currentAiQueryTargetCell && (
               <>
                 {!isRunning && (
                   <span>
@@ -493,12 +234,7 @@ function App() {
                     <span className="mr-1">&#41;.</span>
                     <span
                       className="underline cursor-pointer"
-                      onClick={() => {
-                        worker.current.postMessage({ type: "reset" });
-                        setMessages([]);
-                        setTps(null);
-                        setNumTokens(null);
-                      }}
+                      onClick={resetChat} // Use resetChat from context
                     >
                       Reset Chat
                     </span>
@@ -534,7 +270,7 @@ function App() {
           onInput={(e) => setInput(e.target.value)}
         />
         {isRunning ? (
-          <div className="cursor-pointer" onClick={onInterrupt}>
+          <div className="cursor-pointer" onClick={onInterrupt}> {/* Use onInterrupt from context */}
             <StopIcon className="h-8 w-8 p-1 rounded-md text-gray-800 dark:text-gray-100 absolute right-3 bottom-3" />
           </div>
         ) : input.length > 0 ? (
