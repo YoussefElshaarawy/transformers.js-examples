@@ -73,3 +73,36 @@ const LYRICS = [
     },
   }
 );
+
+/* ------------------------------------------------------------------ */
+/* 4. Register the AI() custom formula                                */
+/* ------------------------------------------------------------------ */
+(univerAPI.getFormula()).registerFunction(
+  'AI',
+  (...args) => {
+    const prompt = Array.isArray(args[0]) ? args[0][0] : args[0];
+    const currentCell = univerAPI.getActiveWorkbook().getActiveSheet().getActiveRange().getA1Notation();
+
+    if (typeof window.triggerAICellFill === 'function') {
+      // Call the global function exposed by WorkerContext to trigger AI generation
+      window.triggerAICellFill(prompt, currentCell);
+      return "Loading AI..."; // Return a placeholder immediately
+    } else {
+      console.error("window.triggerAICellFill is not defined. AI integration might not be ready.");
+      return "ERROR: AI not ready";
+    }
+  },
+  {
+    description: 'customFunction.AI.description',
+    locales: {
+      enUS: {
+        customFunction: {
+          AI: {
+            description:
+              'Sends a prompt to the AI model and fills the current cell with the response.',
+          },
+        },
+      },
+    },
+  }
+);
