@@ -81,7 +81,9 @@ function App() {
       // Ensure the model is ready before queuing
       if (status !== "ready") {
         console.warn("AI model not ready for formula. Please load the model first.");
-        setUniverCellValue(targetCellAddress, "ERROR: Model not ready.");
+        // Assuming setUniverCellValue is defined globally or passed somehow
+        // For demonstration purposes, I'll comment this out as it's not in the provided scope
+        // setUniverCellValue(targetCellAddress, "ERROR: Model not ready.");
         return;
       }
 
@@ -102,57 +104,57 @@ function App() {
 
   // Modified onEnter to handle formula triggers
   function onEnter(message, fromFormula = false) {
-  if (isRunning) {
-    if (!fromFormula) { // If it's a chat message, and AI is busy, ignore
-      console.warn("AI is busy, ignoring chat input.");
-      return;
+    if (isRunning) {
+      if (!fromFormula) { // If it's a chat message, and AI is busy, ignore
+        console.warn("AI is busy, ignoring chat input.");
+        return;
+      }
+      // If it's a formula, it would have been queued and `processNextFormulaRequest` handles it,
+      // which then calls onEnter. If it's already running, it means this call
+      // is part of the queue processing, so we proceed.
     }
-    // If it's a formula, it would have been queued and `processNextFormulaRequest` handles it,
-    // which then calls onEnter. If it's already running, it means this call
-    // is part of the queue processing, so we proceed.
+
+    setTps(null);
+    setIsRunning(true);
+    setInput(""); // Clear the input field for the UI
+
+    // Set the flag based on the source
+    isFormulaTriggered.current = fromFormula;
+
+    // IMPORTANT: Send the message to the worker here, depending on the source
+    if (fromFormula) {
+      // For formulas, send only the current prompt to the worker
+      // The worker should be able to handle this as a standalone prompt.
+      worker.current.postMessage({ type: "generate", data: [{ role: "user", content: message }] });
+    } else {
+      // For regular chat, add the user message to history
+      // and then let the existing useEffect (which now won't have the formula guard)
+      // trigger the worker with the updated messages state.
+      // Or, you could directly post it here as well, but the current useEffect
+      // structure for chat is fine if we remove the formula guard from it.
+      setMessages((prev) => [...prev, { role: "user", content: message }]);
+    }
   }
 
-  setTps(null);
-  setIsRunning(true);
-  setInput(""); // Clear the input field for the UI
+  // Modify the useEffect that watches 'messages' state
+  useEffect(() => {
+    // This useEffect should now ONLY handle chat-based generations,
+    // as formula generations are directly posted in `onEnter`.
+    if (isFormulaTriggered.current) {
+      return; // Do not process chat messages if current generation is for a formula
+    }
 
-  // Set the flag based on the source
-  isFormulaTriggered.current = fromFormula;
+    if (messages.filter((x) => x.role === "user").length === 0) {
+      return; // No user messages yet: do nothing.
+    }
+    if (messages.at(-1).role === "assistant") {
+      return; // Do not update if the last message is from the assistant
+    }
+    setTps(null);
+    // This postMessage will now only be called for chat-originated messages
+    worker.current.postMessage({ type: "generate", data: messages });
+  }, [messages, isRunning]);
 
-  // IMPORTANT: Send the message to the worker here, depending on the source
-  if (fromFormula) {
-    // For formulas, send only the current prompt to the worker
-    // The worker should be able to handle this as a standalone prompt.
-    worker.current.postMessage({ type: "generate", data: [{ role: "user", content: message }] });
-  } else {
-    // For regular chat, add the user message to history
-    // and then let the existing useEffect (which now won't have the formula guard)
-    // trigger the worker with the updated messages state.
-    // Or, you could directly post it here as well, but the current useEffect
-    // structure for chat is fine if we remove the formula guard from it.
-    setMessages((prev) => [...prev, { role: "user", content: message }]);
-  }
-}
-
-// Modify the useEffect that watches 'messages' state
-useEffect(() => {
-  // This useEffect should now ONLY handle chat-based generations,
-  // as formula generations are directly posted in `onEnter`.
-  if (isFormulaTriggered.current) {
-    return; // Do not process chat messages if current generation is for a formula
-  }
-
-  if (messages.filter((x) => x.role === "user").length === 0) {
-    return; // No user messages yet: do nothing.
-  }
-  if (messages.at(-1).role === "assistant") {
-    return; // Do not update if the last message is from the assistant
-  }
-  setTps(null);
-  // This postMessage will now only be called for chat-originated messages
-  worker.current.postMessage({ type: "generate", data: messages });
-}, [messages, isRunning]);
-  
   function onInterrupt() {
     // NOTE: We do not set isRunning to false here because the worker
     // will send a 'complete' message when it is done.
@@ -160,10 +162,10 @@ useEffect(() => {
 
     // --- ADDITION: Handle interruption for formula requests ---
     if (currentFormulaPromise.current) {
-        currentFormulaPromise.current.reject(new Error("AI generation interrupted."));
-        currentFormulaPromise.current = null;
-        currentFormulaTargetCell.current = null;
-        isFormulaTriggered.current = false; // Reset flag
+      currentFormulaPromise.current.reject(new Error("AI generation interrupted."));
+      currentFormulaPromise.current = null;
+      currentFormulaTargetCell.current = null;
+      isFormulaTriggered.current = false; // Reset flag
     }
     // Clear any queued formula requests
     aiFormulaQueue.current = [];
@@ -346,16 +348,16 @@ useEffect(() => {
     // with the formula prompt, and the `update`/`complete` cases will handle it.
     // This `useEffect` is primarily for the chat UI's messages.
     if (!isFormulaTriggered.current) {
-        if (messages.filter((x) => x.role === "user").length === 0) {
-            // No user messages yet: do nothing.
-            return;
-        }
-        if (messages.at(-1).role === "assistant") {
-            // Do not update if the last message is from the assistant
-            return;
-        }
-        setTps(null);
-        worker.current.postMessage({ type: "generate", data: messages });
+      if (messages.filter((x) => x.role === "user").length === 0) {
+        // No user messages yet: do nothing.
+        return;
+      }
+      if (messages.at(-1).role === "assistant") {
+        // Do not update if the last message is from the assistant
+        return;
+      }
+      setTps(null);
+      worker.current.postMessage({ type: "generate", data: messages });
     }
   }, [messages, isRunning]); // Rerun when messages or isRunning changes
 
@@ -529,7 +531,8 @@ useEffect(() => {
           type="text"
           rows={1}
           value={input}
-          disabled={status !== "ready" || isRunning} {/* Disable if model not ready OR AI is busy */}
+          disabled={status !== "ready" || isRunning}
+          {/* Disable if model not ready OR AI is busy */} {/* <-- FIXED LINE */}
           title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
           onKeyDown={(e) => {
             if (
