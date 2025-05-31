@@ -226,7 +226,8 @@ function App() {
       {/* MODIFIED: Removed 'items-center' to allow Chat component to stretch vertically */}
       <div className="flex-grow w-full overflow-hidden flex flex-col">
         {status === null && messages.length === 0 && (
-          <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
+          // <--- MODIFIED: Added flex-grow, flex, justify-center, items-center to fill space
+          <div className="flex-grow flex justify-center items-center flex-col relative">
             <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
               <img
                 src="logo.png"
@@ -301,7 +302,8 @@ function App() {
           </div>
         )}
         {status === "loading" && (
-          <>
+          // <--- MODIFIED: Added flex-grow, flex, justify-center, items-center to fill space
+          <div className="flex-grow flex justify-center items-center flex-col relative">
             <div className="w-full max-w-[500px] text-left mx-auto p-4 bottom-0 mt-auto">
               <p className="text-center mb-1">{loadingMessage}</p>
               {progressItems.map(({ file, progress, total }, i) => (
@@ -313,7 +315,7 @@ function App() {
                 />
               ))}
             </div>
-          </>
+          </div>
         )}
 
         {status === "ready" && (
