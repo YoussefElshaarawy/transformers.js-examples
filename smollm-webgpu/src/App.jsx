@@ -11,9 +11,6 @@ import {
     // You might need to import more from @univerjs/sheets depending on event listeners
     // e.g., ISetCellValuesCommandParams from '@univerjs/sheets';
 } from '@univerjs/presets'; // Or from '@univerjs/core' depending on your setup
-import { UniverSheetsCorePreset } from '@univerjs/presets/preset-sheets-core';
-import enUS from '@univerjs/presets/preset-sheets-core/locales/en-US';
-import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import { ISetCellValuesCommandParams, SetCellValuesCommand } from '@univerjs/sheets'; // For programmatically setting cell values
 import { ICellData, IRange, IWorkbookService, SheetInterceptors } from '@univerjs/sheets'; // More sheet-related imports for event handling
 
@@ -245,7 +242,7 @@ function App() {
             });
 
             // 2. Create a visible 100x100 sheet
-            const workbook = (univerAPI.getAPI(UniverInstanceType.UNIVER_SHEET) as any).createUniverSheet({
+            const workbook = univerAPI.getAPI(UniverInstanceType.UNIVER_SHEET).createUniverSheet({
                 name: 'AI Chat Sheet',
                 rowCount: 100,
                 columnCount: 100,
@@ -263,7 +260,7 @@ function App() {
                 "Loving him was red—burning red",
             ];
 
-            (univerAPI.getFormula() as any).registerFunction(
+            univerAPI.getFormula().registerFunction(
                 'TAYLORSWIFT',
                 (...args) => {
                     const value = Array.isArray(args[0]) ? args[0][0] : args[0];
@@ -298,7 +295,7 @@ function App() {
             // Intercept the SetCellValuesCommand, which is dispatched when a cell's value changes
             commandService.beforeCommandExecute((commandInfo) => {
                 if (commandInfo.id === SetCellValuesCommand.id) {
-                    const params = commandInfo.params as ISetCellValuesCommandParams;
+                    const params = commandInfo.params; // No need for 'as ISetCellValuesCommandParams'
                     const workbook = univerAPI.getAPI(UniverInstanceType.UNIVER_SHEET).getActiveWorkbook();
                     const sheet = workbook.getActiveSheet();
 
@@ -311,7 +308,7 @@ function App() {
                         for (const c in params.cellValue[r]) {
                             const row = Number(r);
                             const col = Number(c);
-                            const cellData: ICellData = params.cellValue[r][c];
+                            const cellData = params.cellValue[r][c]; // No need for ': ICellData'
                             const cellValue = cellData.v?.toString().trim();
 
                             // Ensure it's a non-empty string and not the current AI output stream
