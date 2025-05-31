@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 
 // Import all UniverJS dependencies directly into Chat.jsx
 import {
@@ -6,26 +6,62 @@ import {
   defaultTheme,
   LocaleType,
   merge,
+  UniverInstanceType, // Import UniverInstanceType for type checking
 } from '@univerjs/presets';
 import { UniverSheetsCorePreset } from '@univerjs/presets/preset-sheets-core';
 import enUS from '@univerjs/presets/preset-sheets-core/locales/en-US';
 import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
+// Import specific command for listening to cell changes
+import { ICommandService, Disposable } from '@univerjs/core'; // Added Disposable
+import { SetRangeValuesCommand, SetRangeValuesCommandParams } from '@univerjs/sheets'; // Assuming this is available
 
 // Import Univer's core styles (ensure these paths are correct relative to your project structure)
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
-// Assuming this style.css is specific to your Univer instance or global styling
-import '../style.css'; // Adjust path if style.css is not in the root
+import '../style.css'; // Path from src/components to src/
 
-function Chat({ messages }) {
-  // Use a ref for the UniverJS container
+// Wrap the Chat component with forwardRef
+const Chat = forwardRef(({ messages, onSpreadsheetGenerateRequest }, ref) => {
   const univerContainerRef = useRef(null);
+  const [spreadsheetOutputAccumulator, setSpreadsheetOutputAccumulator] = useState({});
+  const isProgrammaticUpdate = useRef(false); // Flag to prevent infinite loop
 
-  // Initialize UniverJS once the component mounts
+  // Expose functions to the parent component (App.jsx) via ref
+  useImperativeHandle(ref, () => ({
+    // Method to update a spreadsheet cell incrementally with LLM output
+    handleSpreadsheetOutputUpdate: (output, workbookId, sheetId, row, col) => {
+      const key = `${workbookId}-${sheetId}-${row}-${col}`;
+      setSpreadsheetOutputAccumulator(prev => {
+        const newOutput = (prev[key] || '') + output;
+
+        if (window.univerAPI) {
+          const univer = window.univerAPI.getUniver();
+          const workbook = univer.getUniverSheet(workbookId);
+          // In UniverJS, worksheetId is often the same as sheetId for simplicity if not multiple workbooks
+          const worksheet = workbook?.getWorksheet(sheetId); 
+
+          if (worksheet) {
+            isProgrammaticUpdate.current = true; // Set flag to ignore this update from event listener
+            worksheet.setCellRawValue(row, col, newOutput);
+          }
+        }
+        return { ...prev, [key]: newOutput };
+      });
+    },
+    // Method to finalize a spreadsheet cell update (e.g., clear accumulator)
+    handleSpreadsheetOutputComplete: (workbookId, sheetId, row, col) => {
+      const key = `${workbookId}-${sheetId}-${row}-${col}`;
+      setSpreadsheetOutputAccumulator(prev => {
+        const newAccumulator = { ...prev };
+        delete newAccumulator[key]; // Clear the accumulated output for this cell
+        return newAccumulator;
+      });
+    }
+  }));
+
+  // Initialize UniverJS and set up event listener
   useEffect(() => {
-    if (univerContainerRef.current) {
-      /* ------------------------------------------------------------------ */
-      /* 1. Boot‑strap Univer and mount inside <div id="univer">          */
-      /* ------------------------------------------------------------------ */
+    // Only initialize Univer once when the ref is available and univerAPI doesn't exist
+    if (univerContainerRef.current && !window.univerAPI) {
       const { univerAPI } = createUniver({
         locale: LocaleType.EN_US,
         locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
@@ -34,21 +70,18 @@ function Chat({ messages }) {
         presets: [UniverSheetsCorePreset({ container: univerContainerRef.current.id })],
       });
 
-      // IMPORTANT: Expose univerAPI globally so other parts can interact with it
-      window.univerAPI = univerAPI;
+      window.univerAPI = univerAPI; // Expose globally
 
-      /* ------------------------------------------------------------------ */
-      /* 2. Create a visible 100 × 100 sheet                               */
-      /* ------------------------------------------------------------------ */
       univerAPI.createUniverSheet({
         name: 'Hello Univer',
+        id: 'default-workbook', // Give it a specific ID
         rowCount: 100,
         columnCount: 100,
+        // Define default sheet ID if needed, e.g., 'sheet-01'
+        sheets: [{ id: 'sheet-01', name: 'Sheet1', cellData: {} }]
       });
 
-      /* ------------------------------------------------------------------ */
-      /* 3. Register the TAYLORSWIFT() custom formula                      */
-      /* ------------------------------------------------------------------ */
+      // Register the TAYLORSWIFT() custom formula
       const LYRICS = [
         "Cause darling I'm a nightmare dressed like a daydream",
         "We're happy, free, confused and lonely at the same time",
@@ -60,11 +93,8 @@ function Chat({ messages }) {
       (univerAPI.getFormula()).registerFunction(
         'TAYLORSWIFT',
         (...args) => {
-          // Basic argument parsing for TAYLORSWIFT(index) or TAYLORSWIFT()
           const value = Array.isArray(args[0]) ? args[0][0] : args[0];
           const idx = Number(value);
-
-          // Return a specific lyric if index is valid, otherwise a random one
           return idx >= 1 && idx <= LYRICS.length
             ? LYRICS[idx - 1]
             : LYRICS[Math.floor(Math.random() * LYRICS.length)];
@@ -83,17 +113,52 @@ function Chat({ messages }) {
           }
         }
       );
+
+      // <--- NEW: Set up listener for cell changes
+      const commandService = univerAPI.getCommandService();
+      const disposable = commandService.onCommandExecuted((command) => {
+        // If this update was programmatically triggered by LLM output, ignore it.
+        if (isProgrammaticUpdate.current) {
+          isProgrammaticUpdate.current = false; // Reset flag for next potential user input
+          return;
+        }
+
+        // Listen for the command that changes cell values
+        if (command.id === SetRangeValuesCommand.NAME) {
+          const params = command.params; // as SetRangeValuesCommandParams;
+          const { range, value, workbookId, worksheetId } = params;
+
+          // Check if it's a single cell edit and not empty
+          if (
+            range.startRow === range.endRow &&
+            range.startColumn === range.endColumn &&
+            value &&
+            value[0] &&
+            value[0][0] !== undefined
+          ) {
+            const content = value[0][0];
+
+            // Only send to LLM if content is a non-empty string
+            if (typeof content === 'string' && content.trim().length > 0 && onSpreadsheetGenerateRequest) {
+              const row = range.startRow;
+              const col = range.startColumn;
+              onSpreadsheetGenerateRequest(workbookId, worksheetId, row, col, content);
+            }
+          }
+        }
+      });
+
+      // Cleanup function to dispose of the event listener
+      return () => {
+        disposable.dispose();
+      };
     }
-  }, []); // Run only once on mount
+  }, [onSpreadsheetGenerateRequest]); // Depend on the prop to re-run effect if it changes
 
   return (
-    // The main container of Chat.jsx now uses flex-row to arrange its children
-    // The chat messages are on the left, and the spreadsheet is on the right.
     <div className="flex flex-row w-full h-full">
       {/* Left Panel: Existing Chat Messages */}
-      {/* We are encapsulating the existing message rendering logic */}
       <div className="flex flex-col w-1/2 h-full overflow-y-auto scrollbar-thin p-4">
-        {/* Your sacred markdown styling is still active via the global @scope (.markdown) */}
         {messages.map((message, i) => (
           <div
             key={i}
@@ -116,9 +181,9 @@ function Chat({ messages }) {
           Univer Spreadsheet
         </h2>
         {/* The div for UniverJS to mount into */}
-        <div 
+        <div
           id="univer-chat-instance" // Unique ID for this Univer instance
-          ref={univerContainerRef} 
+          ref={univerContainerRef}
           className="flex-grow w-full h-full border border-gray-300 dark:border-gray-600 rounded-md overflow-hidden"
         >
           {/* UniverJS will render its content here */}
@@ -126,6 +191,6 @@ function Chat({ messages }) {
       </div>
     </div>
   );
-}
+});
 
-export default Chat;
+export default Chat; // Export with forwardRef
