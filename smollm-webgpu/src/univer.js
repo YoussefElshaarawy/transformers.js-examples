@@ -2,9 +2,9 @@ import { Univer, set } from '@univerjs/core';
 import { defaultWorkbookData } from '@univerjs/common-workbook';
 import { UniverSheetsPlugin } from '@univerjs/sheets';
 import { UniverFormulaPlugin } from '@univerjs/formula';
-import { enUS } from '@univerjs/design';
-import { UIPlugin } from '@univerjs/ui'; // For basic UI elements, if needed
-import { LocaleType } from '@univerjs/core'; // For LocaleType
+import { enUS } from '@univerjs/design'; // Note: enUS is imported but not used in this snippet
+import { UIPlugin } from '@univerjs/ui';
+import { LocaleType } from '@univerjs/core';
 
 // Initialize Univer instance
 const univer = Univer.newInstance({
@@ -56,16 +56,13 @@ window.setUniverCellValue = (address, value) => {
         }
 
         const colStr = colMatch[0];
-        const rowStr = rowMatch[0];
-
-        // Convert column letters (e.g., 'A' -> 0, 'B' -> 1, 'AA' -> 26)
         let col = 0;
         for (let i = 0; i < colStr.length; i++) {
             col = col * 26 + (colStr.charCodeAt(i) - 'A'.charCodeAt(0) + 1);
         }
         col = col - 1; // Convert to 0-indexed
 
-        const row = parseInt(rowStr, 10) - 1; // Convert to 0-indexed
+        const row = parseInt(rowMatch[0], 10) - 1; // Convert to 0-indexed
 
         if (isNaN(row) || isNaN(col) || row < 0 || col < 0) {
             console.error(`Parsed invalid row/col from address: ${address} -> row: ${row}, col: ${col}`);
@@ -130,8 +127,8 @@ univer.registerFunction({
     // Optional: Add argument definitions for better intellisense in Univer if supported
     // For example:
     // paramTypes: [
-    //     { name: 'prompt', type: 'string', description: 'The text prompt for the AI.' },
-    //     { name: 'targetCell', type: 'string', description: 'The cell address where the AI result will be written.' },
+    //      { name: 'prompt', type: 'string', description: 'The text prompt for the AI.' },
+    //      { name: 'targetCell', type: 'string', description: 'The cell address where the AI result will be written.' },
     // ],
     // description: 'Sends a prompt to the AI model and writes the response to a specified cell.',
 });
@@ -171,8 +168,8 @@ univer.registerFunction({
     },
     // Optional: Add argument definitions
     // paramTypes: [
-    //     { name: 'value', type: 'number', description: 'The value to evaluate the Taylor series at.' },
-    //     { name: 'terms', type: 'number', description: 'The number of terms in the Taylor series expansion.' },
+    //      { name: 'value', type: 'number', description: 'The value to evaluate the Taylor series at.' },
+    //      { name: 'terms', type: 'number', description: 'The number of terms in the Taylor series expansion.' },
     // ],
     // description: 'Calculates the Taylor series expansion of a function.',
 });
