@@ -1,27 +1,11 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/logo.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SmolLM2 WebGPU + Spreadsheet</title>
-  </head>
+<body class="m-0 p-0">
+  <div id="root" class="w-full h-full"></div>
 
-  <body class="m-0 p-0">
-    <!-- flex container for 1/4 chat, 3/4 sheet -->
-    <div class="flex h-screen">
-      <!-- Chat UI mounts here, takes up 1/4 -->
-      <div id="chat-root" class="w-1/4 h-full overflow-auto"></div>
-
-      <!-- Univer sheet mounts here, takes up 3/4 -->
-      <div id="univer" class="w-3/4 h-full overflow-auto bg-white dark:bg-gray-900"></div>
-    </div>
-
-    <!-- your existing scripts -->
-    <script
-      id="MathJax-script"
-      src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"
-    ></script>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
+  <!-- Optional MathJax if you want TeX rendering in chat -->
+  <script
+    id="MathJax-script"
+    async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"
+  ></script>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
