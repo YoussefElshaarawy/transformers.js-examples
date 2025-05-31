@@ -537,7 +537,7 @@ function App() {
           type="text"
           rows={1}
           value={input}
-          {/* Disable if model not ready OR AI is busy */}
+          // Disable if model not ready OR AI is busy
           disabled={status !== "ready" || isRunning}
           title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
           onKeyDown={(e) => {
