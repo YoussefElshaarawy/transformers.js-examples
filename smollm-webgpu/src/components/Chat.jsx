@@ -1,4 +1,4 @@
-/* Chat.jsx  ─ renders the conversation inside a live Univer spreadsheet */
+/* UniverChat.jsx ─ spreadsheet-first chat interface -------------------- */
 import { useEffect, useRef } from "react";
 
 import {
@@ -10,71 +10,99 @@ import {
 import { UniverSheetsCorePreset } from "@univerjs/presets/preset-sheets-core";
 import enUS from "@univerjs/presets/preset-sheets-core/locales/en-US";
 import zhCN from "@univerjs/presets/preset-sheets-core/locales/zh-CN";
+import { SetRangeValuesCommand } from "@univerjs/presets/preset-sheets-core";
 
 import "@univerjs/presets/lib/styles/preset-sheets-core.css";
 
-/** =======================================================================
- * Chat → Univer sheet
- *   • column A  → role  (user / assistant)
- *   • column B  → message text
- *   • column C  → tokens (if your message objects carry that field)
- * ===================================================================== */
-export default function Chat({ messages }) {
-  const containerRef = useRef(null);   // <div> where Univer mounts
-  const sheetRef     = useRef(null);   // keep the sheet instance
+const THINKING = "…thinking…";
 
-  /* ---------------------------------------------------------------
-   * 1.  Initialise Univer (runs once)
-   * ------------------------------------------------------------- */
+export default function UniverChat() {
+  const hostRef      = useRef(null);       // <div> container for the sheet
+  const sheetRef     = useRef(null);       // Univer sheet instance
+  const workerRef    = useRef(null);       // WebGPU worker
+  const pendingRef   = useRef(null);       // {r, c} of the cell being filled
+
+  /* ────────────────────────────────────────────────────────────────────
+   * 1.  Boot-strap Univer + worker  (runs once)
+   * ────────────────────────────────────────────────────────────────── */
   useEffect(() => {
-    if (!containerRef.current || sheetRef.current) return; // already set-up
-
+    /* ---- 1 a . Univer sheet --------------------------------------- */
     const { univerAPI } = createUniver({
       locale : LocaleType.EN_US,
       locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
       theme  : defaultTheme,
-      presets: [UniverSheetsCorePreset({ container: containerRef.current })],
+      presets: [UniverSheetsCorePreset({ container: hostRef.current })],
     });
 
-    // create a blank 1 000 × 3 sheet and remember it
     sheetRef.current = (univerAPI as any).createUniverSheet({
-      name       : "Chat Log",
-      rowCount   : 1000,
+      name       : "SmolLM2 Chat",
+      rowCount   : 500,
       columnCount: 3,
     });
 
-    // header row
-    sheetRef.current.getRange("A1").setValue("Role");
-    sheetRef.current.getRange("B1").setValue("Content");
-    sheetRef.current.getRange("C1").setValue("Tokens");
-  }, []);
-
-  /* ---------------------------------------------------------------
-   * 2.  On every message update, mirror them into the sheet
-   * ------------------------------------------------------------- */
-  useEffect(() => {
-    const sheet = sheetRef.current;
-    if (!sheet) return;
-
-    // wipe previous rows (keep header)
-    sheet.getRange("A2:C1000").clear();
-
-    messages.forEach((msg, i) => {
-      const row = i + 2;           // start writing at row-2
-      sheet.getRange(`A${row}`).setValue(msg.role);
-      sheet.getRange(`B${row}`).setValue(msg.content);
-      if (msg.numTokens !== undefined)
-        sheet.getRange(`C${row}`).setValue(msg.numTokens);
+    /* ---- 1 b . WebGPU worker -------------------------------------- */
+    workerRef.current = new Worker(new URL("../worker.js", import.meta.url), {
+      type: "module",
     });
-  }, [messages]);
+    workerRef.current.postMessage({ type: "check" });
 
-  /* ---------------------------------------------------------------
-   * 3.  Render container
-   * ------------------------------------------------------------- */
-  return (
-    <div
-      ref={containerRef}
-      className="flex-1 w-full h-full overflow-hidden"
-    />
-  );
-}
+    /*  Handle messages from the worker  */
+    workerRef.current.addEventListener("message", ({ data }) => {
+      const sheet = sheetRef.current;
+      if (!sheet || !pendingRef.current) return;
+
+      const { r, c } = pendingRef.current;
+
+      switch (data.status) {
+        case "loading":
+          /* first time → load model immediately */
+          break;
+
+        case "start":
+          sheet.getRange(r, c).setValue(THINKING);
+          break;
+
+        case "update": {
+          /* append partial output in the cell */
+          const cell = sheet.getRange(r, c);
+          const current = cell.getValue() === THINKING ? "" : cell.getValue();
+          cell.setValue(current + data.output);
+          break;
+        }
+
+        case "complete":
+          pendingRef.current = null;
+          break;
+
+        case "error":
+          sheet.getRange(r, c).setValue("[error] " + data.data);
+          pendingRef.current = null;
+          break;
+      }
+    });
+
+    /* ---- 1 c . Intercept every cell edit -------------------------- */
+    univerAPI
+      .getCommandManager()
+      .onCommandExecuted((cmd) => {
+        if (cmd.id !== SetRangeValuesCommand.id) return;
+
+        /* single-cell edits only (ignore drag-fill etc.) */
+        const { rangeData, cellValue } = cmd.params;
+        if (
+          rangeData.startRow !== rangeData.endRow ||
+          rangeData.startColumn !== rangeData.endColumn
+        )
+          return;
+
+        const prompt = Array.isArray(cellValue)
+          ? cellValue[0][0]
+          : cellValue;
+        if (!prompt || prompt === THINKING) return; // empty or internal
+
+        /* fire the model */
+        pendingRef.current = {
+          r: rangeData.startRow,
+          c: rangeData.startColumn,
+        };
+        workerRef.current.
