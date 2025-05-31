@@ -17,7 +17,7 @@ function App() {
   const worker = useRef(null);
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
-  const chatRef = useRef(null); // <--- NEW: Ref to access methods on Chat component
+  const chatRef = useRef(null); // Ref to access methods on Chat component
 
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
@@ -35,18 +35,18 @@ function App() {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
     setIsRunning(true);
-    // <--- NEW: Clear any pending spreadsheet target when a chat message is sent
+    // Clear any pending spreadsheet target when a chat message is sent
     if (worker.current) worker.current._spreadsheetTargetCell = null;
     setInput("");
     worker.current.postMessage({ type: "generate", data: [{ role: "user", content: message }] });
   }
 
-  // <--- NEW FUNCTION: Called by Chat.jsx when a cell is edited
+  // Called by Chat.jsx when a cell is edited
   const onSpreadsheetGenerateRequest = useCallback((workbookId, sheetId, row, col, content) => {
     setIsRunning(true);
     setTps(null); // Reset TPS for new generation
 
-    // <--- NEW: Attach target cell info directly to the worker instance
+    // Attach target cell info directly to the worker instance
     // This is a simple way to pass context from App to its worker message handler
     if (worker.current) {
         worker.current._spreadsheetTargetCell = { workbookId, sheetId, row, col };
@@ -81,7 +81,7 @@ function App() {
     }
 
     const onMessageReceived = (e) => {
-      // <--- NEW: Check if there's a target spreadsheet cell for this generation
+      // Check if there's a target spreadsheet cell for this generation
       // This property is set on the worker instance itself by onSpreadsheetGenerateRequest
       const targetCell = worker.current?._spreadsheetTargetCell;
 
@@ -119,7 +119,7 @@ function App() {
         case "start":
           {
             // Only add assistant message to chat if NOT a spreadsheet generation
-            if (!targetCell) { // <--- MODIFIED: Only for chat output
+            if (!targetCell) { // Only for chat output
               setMessages((prev) => [
                 ...prev,
                 { role: "assistant", content: "" },
@@ -134,7 +134,7 @@ function App() {
             setTps(tps);
             setNumTokens(numTokens);
 
-            // <--- NEW LOGIC: Direct output to spreadsheet cell or chat messages
+            // Direct output to spreadsheet cell or chat messages
             if (targetCell) {
                 // Call method on Chat component via ref to update the spreadsheet cell
                 if (chatRef.current && chatRef.current.handleSpreadsheetOutputUpdate) {
@@ -145,7 +145,7 @@ function App() {
               setMessages((prev) => {
                 const cloned = [...prev];
                 const last = cloned.at(-1);
-                cloned[clloned.length - 1] = {
+                cloned[cloned.length - 1] = {
                   ...last,
                   content: last.content + output,
                 };
@@ -157,7 +157,7 @@ function App() {
 
         case "complete":
           setIsRunning(false);
-          // <--- NEW LOGIC: Clear target cell reference and notify Chat for spreadsheet completion
+          // Clear target cell reference and notify Chat for spreadsheet completion
           if (targetCell) {
             if (chatRef.current && chatRef.current.handleSpreadsheetOutputComplete) {
                 chatRef.current.handleSpreadsheetOutputComplete(targetCell.workbookId, targetCell.sheetId, targetCell.row, targetCell.col);
@@ -220,108 +220,113 @@ function App() {
 
 
   return IS_WEBGPU_AVAILABLE ? (
-    <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-      {status === null && messages.length === 0 && (
-        <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
-          <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
-            <img
-              src="logo.png"
-              width="80%"
-              height="auto"
-              className="block"
-              alt="SmolLM2 WebGPU Logo"
-            ></img>
-            <h1 className="text-4xl font-bold mb-1">SmolLM2 WebGPU</h1>
-            <h2 className="font-semibold">
-              A blazingly fast and powerful AI chatbot that runs locally in your
-              browser.
-            </h2>
-          </div>
+    // <--- MODIFIED: Removed 'justify-end' from main container
+    <div className="flex flex-col h-screen mx-auto items text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
+      {/* <--- NEW WRAPPER DIV: This div will take up the available space above the input/disclaimer */}
+      <div className="flex-grow w-full overflow-hidden flex flex-col items-center">
+        {status === null && messages.length === 0 && (
+          <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
+            <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
+              <img
+                src="logo.png"
+                width="80%"
+                height="auto"
+                className="block"
+                alt="SmolLM2 WebGPU Logo"
+              ></img>
+              <h1 className="text-4xl font-bold mb-1">SmolLM2 WebGPU</h1>
+              <h2 className="font-semibold">
+                A blazingly fast and powerful AI chatbot that runs locally in your
+                browser.
+              </h2>
+            </div>
 
-          <div className="flex flex-col items-center px-4">
-            <p className="max-w-[480px] mb-4">
-              <br />
-              You are about to load{" "}
-              <a
-                href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium underline"
+            <div className="flex flex-col items-center px-4">
+              <p className="max-w-[480px] mb-4">
+                <br />
+                You are about to load{" "}
+                <a
+                  href="https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium underline"
+                >
+                  SmolLM2-1.7B-Instruct
+                </a>
+                , a 1.7B parameter LLM optimized for in-browser inference.
+                Everything runs entirely in your browser with{" "}
+                <a
+                  href="https://huggingface.co/docs/transformers.js"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  🤗&nbsp;Transformers.js
+                </a>{" "}
+                and ONNX Runtime Web, meaning no data is sent to a server. Once
+                loaded, it can even be used offline. The source code for the demo
+                is available on{" "}
+                <a
+                  href="https://github.com/huggingface/transformers.js-examples/tree/main/smollm-webgpu"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium underline"
+                >
+                  GitHub
+                </a>
+                .
+              </p>
+
+              {error && (
+                <div className="text-red-500 text-center mb-2">
+                  <p className="mb-1">
+                    Unable to load model due to the following error:
+                  </p>
+                  <p className="text-sm">{error}</p>
+                </div>
+              )}
+
+              <button
+                className="border px-4 py-2 rounded-lg bg-blue-400 text-white hover:bg-blue-500 disabled:bg-blue-100 disabled:cursor-not-allowed select-none"
+                onClick={() => {
+                  worker.current.postMessage({ type: "load" });
+                  setStatus("loading");
+                }}
+                disabled={status !== null || error !== null}
               >
-                SmolLM2-1.7B-Instruct
-              </a>
-              , a 1.7B parameter LLM optimized for in-browser inference.
-              Everything runs entirely in your browser with{" "}
-              <a
-                href="https://huggingface.co/docs/transformers.js"
-                target="_blank"
-                rel="noreferrer"
-                className="underline"
-              >
-                🤗&nbsp;Transformers.js
-              </a>{" "}
-              and ONNX Runtime Web, meaning no data is sent to a server. Once
-              loaded, it can even be used offline. The source code for the demo
-              is available on{" "}
-              <a
-                href="https://github.com/huggingface/transformers.js-examples/tree/main/smollm-webgpu"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium underline"
-              >
-                GitHub
-              </a>
-              .
-            </p>
-
-            {error && (
-              <div className="text-red-500 text-center mb-2">
-                <p className="mb-1">
-                  Unable to load model due to the following error:
-                </p>
-                <p className="text-sm">{error}</p>
-              </div>
-            )}
-
-            <button
-              className="border px-4 py-2 rounded-lg bg-blue-400 text-white hover:bg-blue-500 disabled:bg-blue-100 disabled:cursor-not-allowed select-none"
-              onClick={() => {
-                worker.current.postMessage({ type: "load" });
-                setStatus("loading");
-              }}
-              disabled={status !== null || error !== null}
-            >
-              Load model
-            </button>
+                Load model
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-      {status === "loading" && (
-        <>
-          <div className="w-full max-w-[500px] text-left mx-auto p-4 bottom-0 mt-auto">
-            <p className="text-center mb-1">{loadingMessage}</p>
-            {progressItems.map(({ file, progress, total }, i) => (
-              <Progress
-                key={i}
-                text={file}
-                percentage={progress}
-                total={total}
-              />
-            ))}
-          </div>
-        </>
-      )}
+        )}
+        {status === "loading" && (
+          <>
+            <div className="w-full max-w-[500px] text-left mx-auto p-4 bottom-0 mt-auto">
+              <p className="text-center mb-1">{loadingMessage}</p>
+              {progressItems.map(({ file, progress, total }, i) => (
+                <Progress
+                  key={i}
+                  text={file}
+                  percentage={progress}
+                  total={total}
+                />
+              ))}
+            </div>
+          </>
+        )}
 
-      {status === "ready" && (
-        // <--- NEW PROPS: Pass ref and onSpreadsheetGenerateRequest
-        <Chat
-          ref={chatRef}
-          messages={messages}
-          chatContainerRef={chatContainerRef}
-          onSpreadsheetGenerateRequest={onSpreadsheetGenerateRequest}
-        />
-      )}
+        {status === "ready" && (
+          // This Chat component will now fill the flex-grow div
+          <Chat
+            ref={chatRef}
+            messages={messages}
+            chatContainerRef={chatContainerRef}
+            onSpreadsheetGenerateRequest={onSpreadsheetGenerateRequest}
+          />
+        )}
+      </div> {/* End of flex-grow div */}
 
+      {/* Input area and disclaimer remain at the bottom */}
       <div className="mt-2 border dark:bg-gray-700 rounded-lg w-[600px] max-w-[80%] max-h-[200px] mx-auto relative mb-3 flex">
         <textarea
           ref={textareaRef}
