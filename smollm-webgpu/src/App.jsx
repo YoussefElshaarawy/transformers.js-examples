@@ -1,9 +1,28 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 
+// UniverJS Imports
+import {
+  createUniver,
+  defaultTheme,
+  LocaleType,
+  merge,
+} from '@univerjs/presets';
+import { UniverSheetsCorePreset } from '@univerjs/presets/preset-sheets-core';
+import enUS from '@univerjs/presets/preset-sheets-core/locales/en-US';
+import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
+// Import the command needed to listen for cell value changes
+import { SetRangeValuesCommand } from '@univerjs/sheets';
+
+// Local Components (assuming these are in the same directory or accessible)
 import Chat from "./components/Chat";
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
+
+// UniverJS Styles (these would typically be imported at the root level of your project,
+// ensure your build system handles these imports correctly if they are not already)
+// import './style.css'; // Assuming this is for basic Univer container styling
+// import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -27,89 +46,51 @@ function App() {
   const [progressItems, setProgressItems] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
 
-  // Inputs and outputs
+  // Inputs and outputs for the main chat UI
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
-  // --- START: ADDITIONS FOR AI FORMULA INTEGRATION ---
-  // A queue for AI requests coming from the =AI() formula
-  const aiFormulaQueue = useRef([]);
-  // Ref to hold the resolve/reject functions for the current AI formula request
-  const currentFormulaPromise = useRef(null);
-  // Ref to hold the target cell address for the current AI formula request
-  const currentFormulaTargetCell = useRef(null);
-  // Flag to indicate if the current generation was triggered by a formula
-  const isFormulaTriggered = useRef(false);
+  // UniverJS State
+  const univerAPI = useRef(null); // To store the Univer API instance
+
+  // A queue for AI requests coming from cell edits
+  const aiCellRequestQueue = useRef([]);
+  // Ref to hold the target cell address (UniverJS coordinates) for the current AI request
+  const currentCellTarget = useRef(null);
+  // Flag to indicate if the current generation was triggered by a cell edit
+  const isCellTriggered = useRef(false);
 
   // Function to process the next item in the queue
-  const processNextFormulaRequest = () => {
+  const processNextAIRequest = useCallback(() => {
     if (isRunning) {
       // AI is busy, will try again when current generation completes
       return;
     }
-    if (aiFormulaQueue.current.length > 0) {
-      const { prompt, targetCellAddress, resolve, reject } = aiFormulaQueue.current.shift();
+    if (aiCellRequestQueue.current.length > 0) {
+      const { prompt, targetCellAddress } = aiCellRequestQueue.current.shift();
 
-      // Store the promise handlers and target cell for the current formula request
-      currentFormulaPromise.current = { resolve, reject };
-      currentFormulaTargetCell.current = targetCellAddress;
-      isFormulaTriggered.current = true; // Set flag
+      currentCellTarget.current = targetCellAddress; // Store the cell coordinates
+      isCellTriggered.current = true; // Set flag to indicate cell-triggered AI
 
-      // Simulate typing the prompt into the input and pressing enter
-      // This will trigger the existing `onEnter` logic.
-      setInput(prompt); // Set the input field to the prompt
-      // We need to delay calling onEnter slightly to ensure React processes the setInput
-      setTimeout(() => {
-        // We'll call onEnter directly here, bypassing the UI input check if desired.
-        // Or, more simply, we let the existing useEffect for `messages` handle it,
-        // after `onEnter` adds the user message.
-        // Let's modify onEnter to accept an optional 'isFormula' flag
-        onEnter(prompt, true); // Call onEnter, indicating it's from a formula
-      }, 0); // Short delay
-    }
-  };
+      setTps(null); // Reset TPS for new generation
+      setIsRunning(true); // Indicate AI is busy
 
-  // Expose a global function for Univer to call
-  useEffect(() => {
-    // The `triggerAICellFill` function from Univer
-    window.triggerAICellFill = async (prompt, targetCellAddress) => {
-      console.log(`AI Triggered for cell ${targetCellAddress} with prompt: "${prompt}"`);
-
-      // Ensure the model is ready before queuing
-      if (status !== "ready") {
-        console.warn("AI model not ready for formula. Please load the model first.");
-        // We cannot call setUniverCellValue directly here as it's not available in this scope.
-        // The promise from Univer's call to triggerAICellFill will be rejected,
-        // and Univer's formula engine should display an error or handle the rejected promise.
-        return Promise.reject("ERROR: AI model not ready.");
-      }
-
-      return new Promise((resolve, reject) => {
-        aiFormulaQueue.current.push({ prompt, targetCellAddress, resolve, reject });
-        processNextFormulaRequest(); // Attempt to process immediately
+      // Send the prompt to the worker
+      worker.current.postMessage({
+        type: "generate",
+        data: [{ role: "user", content: prompt }], // Worker expects an array of messages
       });
-    };
+    }
+  }, [isRunning]); // Depend on isRunning to re-evaluate when AI becomes free
 
-    // Clean up the global function when the component unmounts
-    return () => {
-      delete window.triggerAICellFill;
-    };
-  }, [status, isRunning, messages]); // Depend on status, isRunning, and messages to ensure latest state is captured
-
-  // --- END: ADDITIONS FOR AI FORMULA INTEGRATION ---
-
-  // Modified onEnter to handle formula triggers
-  function onEnter(message, fromFormula = false) {
+  // Modified onEnter to handle chat UI triggers
+  function onEnter(message) {
     if (isRunning) {
-      // If already running (either chat or formula), do not start a new chat,
-      // but allow formula requests to queue.
-      if (!fromFormula) { // If it's a chat message, and AI is busy, ignore
-        console.warn("AI is busy, ignoring chat input.");
-        return;
-      }
-      // If it's a formula, it would have been queued and `processNextFormulaRequest` handles it
+      // If AI is busy, ignore chat input
+      console.warn("AI is busy, ignoring chat input.");
+      return;
     }
 
     // Add user message to the chat history
@@ -118,11 +99,7 @@ function App() {
     setIsRunning(true);
     setInput(""); // Clear the input field for the UI
 
-    // If this was triggered by a formula, keep `isFormulaTriggered` flag set
-    // Otherwise, ensure it's false for normal chat.
-    if (!fromFormula) {
-      isFormulaTriggered.current = false;
-    }
+    isCellTriggered.current = false; // Ensure this is false for normal chat
   }
 
   function onInterrupt() {
@@ -130,16 +107,14 @@ function App() {
     // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
 
-    // --- ADDITION: Handle interruption for formula requests ---
-    if (currentFormulaPromise.current) {
-      currentFormulaPromise.current.reject(new Error("AI generation interrupted."));
-      currentFormulaPromise.current = null;
-      currentFormulaTargetCell.current = null;
-      isFormulaTriggered.current = false; // Reset flag
+    // Handle interruption for cell requests
+    if (currentCellTarget.current) {
+      // If a cell request was active, clear its reference
+      currentCellTarget.current = null;
+      isCellTriggered.current = false; // Reset flag
     }
-    // Clear any queued formula requests
-    aiFormulaQueue.current = [];
-    // --- END ADDITION ---
+    // Clear any queued cell requests
+    aiCellRequestQueue.current = [];
   }
 
   useEffect(() => {
@@ -154,6 +129,62 @@ function App() {
     const newHeight = Math.min(Math.max(target.scrollHeight, 24), 200);
     target.style.height = `${newHeight}px`;
   }
+
+  // Effect for initializing UniverJS and setting up cell edit listener
+  useEffect(() => {
+    if (!univerAPI.current) {
+      // 1. Boot-strap Univer and mount inside <div id="univer">
+      const { univerAPI: api } = createUniver({
+        locale: LocaleType.EN_US,
+        locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
+        theme: defaultTheme,
+        presets: [UniverSheetsCorePreset({ container: 'univer' })],
+      });
+      univerAPI.current = api;
+
+      // 2. Create a visible 100x100 sheet
+      (univerAPI.current).createUniverSheet({
+        name: 'AI Chat Sheet',
+        rowCount: 100,
+        columnCount: 100,
+      });
+
+      // 3. Register a listener for cell value changes (SetRangeValuesCommand)
+      // This command is executed when a user finishes editing a cell by pressing Enter or clicking away.
+      const commandService = univerAPI.current.getCommandService();
+      const disposeCommandListener = commandService.onCommandExecuted((command) => {
+        if (command.id === SetRangeValuesCommand.id) {
+          const { unitId, subUnitId, range, value } = command.params;
+
+          // Assuming a single cell edit for simplicity. 'value' is an array of arrays.
+          if (value && value.length > 0 && value[0].length > 0) {
+            const prompt = value[0][0]; // Get the new cell value as the prompt
+            const row = range.startRow;
+            const col = range.startColumn;
+
+            if (typeof prompt === 'string' && prompt.trim().length > 0) {
+              // Only trigger AI if it's not currently running (to prevent re-triggering on AI's own updates)
+              // and if the current AI operation wasn't already triggered by a cell (avoiding loops)
+              if (!isRunning && !isCellTriggered.current) {
+                aiCellRequestQueue.current.push({
+                  prompt: prompt.trim(),
+                  targetCellAddress: { unitId, subUnitId, row, col }, // Store full address
+                });
+                processNextAIRequest();
+              }
+            }
+          }
+        }
+      });
+
+      // Cleanup function for UniverJS and its command listener
+      return () => {
+        disposeCommandListener.dispose();
+        // If UniverJS has a dispose method, call it here:
+        // univerAPI.current.dispose();
+      };
+    }
+  }, [isRunning, processNextAIRequest]); // Dependencies: isRunning to prevent re-triggering, processNextAIRequest for stability
 
   // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
@@ -200,14 +231,14 @@ function App() {
         case "ready":
           // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
-          processNextFormulaRequest(); // --- ADDITION: Try to process queue when ready ---
+          processNextAIRequest(); // Try to process queue when ready
           break;
 
         case "start":
           {
             // Start generation
-            // Only add a new assistant message for chat UI, not for formula responses
-            if (!isFormulaTriggered.current) {
+            // Only add a new assistant message for chat UI, not for cell responses
+            if (!isCellTriggered.current) {
               setMessages((prev) => [
                 ...prev,
                 { role: "assistant", content: "" },
@@ -219,19 +250,23 @@ function App() {
         case "update":
           {
             // Generation update: update the output text.
-            // Parse messages
             const { output, tps, numTokens } = e.data;
             setTps(tps);
             setNumTokens(numTokens);
 
-            // --- ADDITION: Handle AI Formula output accumulation ---
-            if (isFormulaTriggered.current && currentFormulaTargetCell.current) {
-              // Accumulate content for the formula response
-              if (!currentFormulaTargetCell.current._aiAccumulatedContent) {
-                currentFormulaTargetCell.current._aiAccumulatedContent = "";
+            // If triggered by a cell, update the cell directly
+            if (isCellTriggered.current && currentCellTarget.current && univerAPI.current) {
+              const { unitId, subUnitId, row, col } = currentCellTarget.current;
+              const workbook = univerAPI.current.getUniverSheet(unitId);
+              const sheet = workbook ? workbook.getWorksheet(subUnitId) : null;
+
+              if (sheet) {
+                // Get current cell value to append to it
+                const currentCellValue = sheet.getRange(row, col).getValue() || '';
+                // Update cell value. UniverJS's setValue will trigger SetRangeValuesCommand,
+                // but our listener has a guard for `isRunning` to prevent loops.
+                sheet.getRange(row, col).setValue(currentCellValue + output);
               }
-              currentFormulaTargetCell.current._aiAccumulatedContent += output;
-              // No direct setMessages for formula generation to avoid polluting chat UI
             } else {
               // Original chat UI logic for updates
               setMessages((prev) => {
@@ -251,34 +286,30 @@ function App() {
           // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
 
-          // --- ADDITION: Resolve AI Formula Promise and process next ---
-          if (isFormulaTriggered.current && currentFormulaPromise.current) {
-            const finalContent = currentFormulaTargetCell.current._aiAccumulatedContent || "";
-            currentFormulaPromise.current.resolve(finalContent);
-            // Clean up formula specific refs
-            currentFormulaPromise.current = null;
-            currentFormulaTargetCell.current = null;
-            isFormulaTriggered.current = false; // Reset flag
+          // Clean up cell specific refs if it was a cell-triggered request
+          if (isCellTriggered.current && currentCellTarget.current) {
+            currentCellTarget.current = null;
+            isCellTriggered.current = false; // Reset flag
           }
-          // --- END ADDITION ---
-
-          processNextFormulaRequest(); // --- ADDITION: Process next item in queue, regardless of trigger type ---
+          processNextAIRequest(); // Process next item in queue
           break;
 
         case "error":
           setError(e.data.data);
           setIsRunning(false); // Make sure to release the running state
 
-          // --- ADDITION: Reject AI Formula Promise and process next ---
-          if (isFormulaTriggered.current && currentFormulaPromise.current) {
-            currentFormulaPromise.current.reject(new Error(e.data.data));
-            currentFormulaPromise.current = null;
-            currentFormulaTargetCell.current = null;
-            isFormulaTriggered.current = false; // Reset flag
+          // If triggered by a cell, update the cell with an error message
+          if (isCellTriggered.current && currentCellTarget.current && univerAPI.current) {
+            const { unitId, subUnitId, row, col } = currentCellTarget.current;
+            const workbook = univerAPI.current.getUniverSheet(unitId);
+            const sheet = workbook ? workbook.getWorksheet(subUnitId) : null;
+            if (sheet) {
+              sheet.getRange(row, col).setValue(`ERROR: ${e.data.data}`);
+            }
+            currentCellTarget.current = null;
+            isCellTriggered.current = false; // Reset flag
           }
-          // --- END ADDITION ---
-
-          processNextFormulaRequest(); // --- ADDITION: Process next item in queue ---
+          processNextAIRequest(); // Process next item in queue
           break;
       }
     };
@@ -288,16 +319,18 @@ function App() {
       setError(`Worker error: ${e.message || 'Unknown'}`); // Set a more specific error
       setIsRunning(false);
 
-      // --- ADDITION: Reject AI Formula Promise on worker error and process next ---
-      if (isFormulaTriggered.current && currentFormulaPromise.current) {
-        currentFormulaPromise.current.reject(new Error(`Worker error: ${e.message || 'Unknown'}`));
-        currentFormulaPromise.current = null;
-        currentFormulaTargetCell.current = null;
-        isFormulaTriggered.current = false; // Reset flag
+      // If triggered by a cell, update the cell with an error message
+      if (isCellTriggered.current && currentCellTarget.current && univerAPI.current) {
+        const { unitId, subUnitId, row, col } = currentCellTarget.current;
+        const workbook = univerAPI.current.getUniverSheet(unitId);
+        const sheet = workbook ? workbook.getWorksheet(subUnitId) : null;
+        if (sheet) {
+          sheet.getRange(row, col).setValue(`WORKER ERROR: ${e.message || 'Unknown'}`);
+        }
+        currentCellTarget.current = null;
+        isCellTriggered.current = false; // Reset flag
       }
-      // --- END ADDITION ---
-
-      processNextFormulaRequest(); // --- ADDITION: Process next item in queue ---
+      processNextAIRequest(); // Process next item in queue
     };
 
     // Attach the callback function as an event listener.
@@ -309,15 +342,12 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []); // Empty dependency array means this runs once on mount, mimicking initial setup
+  }, [processNextAIRequest, isRunning]); // Empty dependency array means this runs once on mount, mimicking initial setup
 
-  // Send the messages to the worker thread whenever the `messages` state changes.
+  // Send the messages to the worker thread whenever the `messages` state changes (for chat UI).
   useEffect(() => {
-    // Only send messages to the worker if the current generation is not specifically for a formula.
-    // If `isFormulaTriggered` is true, the `onEnter` for formula would have already called worker.postMessage
-    // with the formula prompt, and the `update`/`complete` cases will handle it.
-    // This `useEffect` is primarily for the chat UI's messages.
-    if (!isFormulaTriggered.current) {
+    // Only send messages to the worker if the current generation is NOT specifically for a cell.
+    if (!isCellTriggered.current) {
       if (messages.filter((x) => x.role === "user").length === 0) {
         // No user messages yet: do nothing.
         return;
@@ -331,6 +361,7 @@ function App() {
     }
   }, [messages, isRunning]); // Rerun when messages or isRunning changes
 
+  // Auto-scroll chat container
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
     const element = chatContainerRef.current;
@@ -348,10 +379,11 @@ function App() {
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
             <img
-              src="logo.png"
+              src="logo.png" // Ensure this image path is correct or replace with a placeholder
               width="80%"
               height="auto"
               className="block"
+              alt="Logo"
             ></img>
             <h1 className="text-4xl font-bold mb-1">SmolLM2 WebGPU</h1>
             <h2 className="font-semibold">
@@ -435,64 +467,73 @@ function App() {
       )}
 
       {status === "ready" && (
-        <div
-          ref={chatContainerRef}
-          className="overflow-y-auto scrollbar-thin w-full flex flex-col items-center h-full"
-        >
-          {/* Only display chat messages if not currently processing a formula */}
-          {!isFormulaTriggered.current && <Chat messages={messages} />}
-          {messages.length === 0 && (
-            <div>
-              {EXAMPLES.map((msg, i) => (
-                <div
-                  key={i}
-                  className="m-1 border dark:border-gray-600 rounded-md p-2 bg-gray-100 dark:bg-gray-700 cursor-pointer"
-                  onClick={() => onEnter(msg)}
-                >
-                  {msg}
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300">
-            {tps && messages.length > 0 && (
-              <>
-                {!isRunning && (
-                  <span>
-                    Generated {numTokens} tokens in{" "}
-                    {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
-                  </span>
-                )}
-                {
-                  <>
-                    <span className="font-medium text-center mr-1 text-black dark:text-white">
-                      {tps.toFixed(2)}
-                    </span>
-                    <span className="text-gray-500 dark:text-gray-300">
-                      tokens/second
-                    </span>
-                  </>
-                }
-                {!isRunning && (
-                  <>
-                    <span className="mr-1">&#41;.</span>
-                    <span
-                      className="underline cursor-pointer"
-                      onClick={() => {
-                        worker.current.postMessage({ type: "reset" });
-                        setMessages([]);
-                      }}
-                    >
-                      Reset
-                    </span>
-                  </>
-                )}
-              </>
+        <div className="flex flex-col h-full w-full">
+          {/* UniverJS Spreadsheet Container */}
+          <div id="univer" style={{ flex: 1, minHeight: '300px', width: '100%' }}>
+            {/* UniverJS will mount here */}
+          </div>
+
+          {/* Chat UI - Only display if not currently processing a cell request */}
+          <div
+            ref={chatContainerRef}
+            className="overflow-y-auto scrollbar-thin w-full flex flex-col items-center h-full"
+            style={{ flex: 1, display: isCellTriggered.current ? 'none' : 'flex' }} // Hide chat if cell-triggered
+          >
+            <Chat messages={messages} />
+            {messages.length === 0 && (
+              <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-2 max-w-[600px] w-full">
+                {EXAMPLES.map((msg, i) => (
+                  <div
+                    key={i}
+                    className="m-1 border dark:border-gray-600 rounded-md p-2 bg-gray-100 dark:bg-gray-700 cursor-pointer text-sm"
+                    onClick={() => onEnter(msg)}
+                  >
+                    {msg}
+                  </div>
+                ))}
+              </div>
             )}
-          </p>
+            <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300">
+              {tps && messages.length > 0 && (
+                <>
+                  {!isRunning && (
+                    <span>
+                      Generated {numTokens} tokens in{" "}
+                      {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
+                    </span>
+                  )}
+                  {
+                    <>
+                      <span className="font-medium text-center mr-1 text-black dark:text-white">
+                        {tps.toFixed(2)}
+                      </span>
+                      <span className="text-gray-500 dark:text-gray-300">
+                        tokens/second
+                      </span>
+                    </>
+                  }
+                  {!isRunning && (
+                    <>
+                      <span className="mr-1">&#41;.</span>
+                      <span
+                        className="underline cursor-pointer"
+                        onClick={() => {
+                          worker.current.postMessage({ type: "reset" });
+                          setMessages([]);
+                        }}
+                      >
+                        Reset
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
+            </p>
+          </div>
         </div>
       )}
 
+      {/* Input area for the main chat UI */}
       <div className="mt-2 border dark:bg-gray-700 rounded-lg w-[600px] max-w-[80%] max-h-[200px] mx-auto relative mb-3 flex">
         <textarea
           ref={textareaRef}
@@ -501,12 +542,13 @@ function App() {
           type="text"
           rows={1}
           value={input}
-          disabled={status !== "ready" || isRunning} {/* Disable if model not ready OR AI is busy */}
+          disabled={status !== "ready" || isRunning || isCellTriggered.current} // Disable if model not ready OR AI is busy OR cell-triggered
           title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
           onKeyDown={(e) => {
             if (
               input.length > 0 &&
-              !isRunning && // Check if AI is NOT running (for chat OR formula)
+              !isRunning && // Check if AI is NOT running (for chat OR cell)
+              !isCellTriggered.current && // Ensure it's not a cell-triggered operation
               e.key === "Enter" &&
               !e.shiftKey
             ) {
