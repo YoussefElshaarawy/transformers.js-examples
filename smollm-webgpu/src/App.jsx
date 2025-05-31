@@ -102,29 +102,57 @@ function App() {
 
   // Modified onEnter to handle formula triggers
   function onEnter(message, fromFormula = false) {
-    if (isRunning) {
-        // If already running (either chat or formula), do not start a new chat,
-        // but allow formula requests to queue.
-        if (!fromFormula) { // If it's a chat message, and AI is busy, ignore
-            console.warn("AI is busy, ignoring chat input.");
-            return;
-        }
-        // If it's a formula, it would have been queued and `processNextFormulaRequest` handles it
+  if (isRunning) {
+    if (!fromFormula) { // If it's a chat message, and AI is busy, ignore
+      console.warn("AI is busy, ignoring chat input.");
+      return;
     }
-
-    // Add user message to the chat history
-    setMessages((prev) => [...prev, { role: "user", content: message }]);
-    setTps(null);
-    setIsRunning(true);
-    setInput(""); // Clear the input field for the UI
-
-    // If this was triggered by a formula, keep `isFormulaTriggered` flag set
-    // Otherwise, ensure it's false for normal chat.
-    if (!fromFormula) {
-        isFormulaTriggered.current = false;
-    }
+    // If it's a formula, it would have been queued and `processNextFormulaRequest` handles it,
+    // which then calls onEnter. If it's already running, it means this call
+    // is part of the queue processing, so we proceed.
   }
 
+  setTps(null);
+  setIsRunning(true);
+  setInput(""); // Clear the input field for the UI
+
+  // Set the flag based on the source
+  isFormulaTriggered.current = fromFormula;
+
+  // IMPORTANT: Send the message to the worker here, depending on the source
+  if (fromFormula) {
+    // For formulas, send only the current prompt to the worker
+    // The worker should be able to handle this as a standalone prompt.
+    worker.current.postMessage({ type: "generate", data: [{ role: "user", content: message }] });
+  } else {
+    // For regular chat, add the user message to history
+    // and then let the existing useEffect (which now won't have the formula guard)
+    // trigger the worker with the updated messages state.
+    // Or, you could directly post it here as well, but the current useEffect
+    // structure for chat is fine if we remove the formula guard from it.
+    setMessages((prev) => [...prev, { role: "user", content: message }]);
+  }
+}
+
+// Modify the useEffect that watches 'messages' state
+useEffect(() => {
+  // This useEffect should now ONLY handle chat-based generations,
+  // as formula generations are directly posted in `onEnter`.
+  if (isFormulaTriggered.current) {
+    return; // Do not process chat messages if current generation is for a formula
+  }
+
+  if (messages.filter((x) => x.role === "user").length === 0) {
+    return; // No user messages yet: do nothing.
+  }
+  if (messages.at(-1).role === "assistant") {
+    return; // Do not update if the last message is from the assistant
+  }
+  setTps(null);
+  // This postMessage will now only be called for chat-originated messages
+  worker.current.postMessage({ type: "generate", data: messages });
+}, [messages, isRunning]);
+  
   function onInterrupt() {
     // NOTE: We do not set isRunning to false here because the worker
     // will send a 'complete' message when it is done.
