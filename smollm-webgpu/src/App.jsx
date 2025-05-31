@@ -1,9 +1,15 @@
 import { useEffect, useState, useRef } from "react";
-
 import Chat from "./components/Chat";
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
+
+// Import necessary Univer modules for listening to changes
+import { ICellData, IRange } from '@univerjs/core';
+import { SelectionManagerService } from '@univerjs/sheets';
+import { Disposable, ICommandService, LifecycleStages, OnLifecycle } from '@univerjs/core';
+import { SetSelectionsOperation } from '@univerjs/sheets';
+
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -13,7 +19,8 @@ const EXAMPLES = [
   "Write python code to compute the nth fibonacci number.",
 ];
 
-function App() {
+// Add univerAPI to the props of the App component
+function App({ univerAPI }) {
   // Create a reference to the worker object.
   const worker = useRef(null);
 
@@ -33,6 +40,9 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
+  // State to track the active cell for AI response
+  const [activeCell, setActiveCell] = useState(null); // { row, col, sheetId, workbookId }
+
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
@@ -41,8 +51,6 @@ function App() {
   }
 
   function onInterrupt() {
-    // NOTE: We do not set isRunning to false here because the worker
-    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
   }
 
@@ -73,7 +81,6 @@ function App() {
     const onMessageReceived = (e) => {
       switch (e.data.status) {
         case "loading":
-          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -83,7 +90,6 @@ function App() {
           break;
 
         case "progress":
-          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
@@ -95,34 +101,43 @@ function App() {
           break;
 
         case "done":
-          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
             prev.filter((item) => item.file !== e.data.file),
           );
           break;
 
         case "ready":
-          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
-        case "start":
-          {
-            // Start generation
+        case "start": {
+          // Start generation for chat
+          if (!activeCell) { // Only add to chat messages if not an AI cell response
             setMessages((prev) => [
               ...prev,
               { role: "assistant", content: "" },
             ]);
           }
           break;
+        }
 
-        case "update":
-          {
-            // Generation update: update the output text.
-            // Parse messages
-            const { output, tps, numTokens } = e.data;
-            setTps(tps);
-            setNumTokens(numTokens);
+        case "update": {
+          const { output, tps, numTokens } = e.data;
+          setTps(tps);
+          setNumTokens(numTokens);
+
+          if (activeCell) {
+            // Update the Univer cell directly
+            const { row, col, sheetId, workbookId } = activeCell;
+            const workbook = univerAPI.getUniver().getCurrentUniverSheetInstance();
+            const sheet = workbook?.getSheetBySheetId(sheetId);
+            if (sheet) {
+              const cell = sheet.getCell(row, col);
+              const currentValue = cell ? cell.v : '';
+              sheet.setCell(row, col, { v: (currentValue || '') + output });
+            }
+          } else {
+            // Update the chat output text.
             setMessages((prev) => {
               const cloned = [...prev];
               const last = cloned.at(-1);
@@ -134,46 +149,47 @@ function App() {
             });
           }
           break;
+        }
 
         case "complete":
-          // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
+          setActiveCell(null); // Clear active cell after completion
           break;
 
         case "error":
           setError(e.data.data);
+          setActiveCell(null); // Clear active cell on error
           break;
       }
     };
 
     const onErrorReceived = (e) => {
       console.error("Worker error:", e);
+      setActiveCell(null); // Clear active cell on error
     };
 
-    // Attach the callback function as an event listener.
     worker.current.addEventListener("message", onMessageReceived);
     worker.current.addEventListener("error", onErrorReceived);
 
-    // Define a cleanup function for when the component is unmounted.
     return () => {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, [activeCell, univerAPI]); // Add activeCell and univerAPI to dependencies
 
-  // Send the messages to the worker thread whenever the `messages` state changes.
+  // Send the messages to the worker thread whenever the `messages` state changes (for chat)
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet: do nothing.
       return;
     }
     if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
       return;
     }
     setTps(null);
-    worker.current.postMessage({ type: "generate", data: messages });
-  }, [messages, isRunning]);
+    if (!activeCell) { // Only send chat messages if not an active cell response
+      worker.current.postMessage({ type: "generate", data: messages });
+    }
+  }, [messages, isRunning, activeCell]);
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
@@ -185,6 +201,66 @@ function App() {
       element.scrollTop = element.scrollHeight;
     }
   }, [messages, isRunning]);
+
+
+  // *******************************************************************
+  // NEW: Univer Cell Change Listener and AI Integration
+  // *******************************************************************
+  useEffect(() => {
+    if (!univerAPI || status !== "ready") return; // Ensure Univer API and LLM are ready
+
+    const commandService = univerAPI.getUniver().getCommandService();
+    const sheetService = univerAPI.getUniver().getCurrentUniverSheetInstance()?.getUnitService();
+
+    if (!commandService || !sheetService) return;
+
+    const disposable = new Disposable();
+
+    // Listen for cell value changes
+    disposable.add(
+      commandService.onCommandExecuted((commandInfo) => {
+        if (commandInfo.id === 'sheet.command.set-range-values') {
+          const { workbookId, worksheetId, range, value } = commandInfo.params;
+          const workbook = univerAPI.getUniver().getWorkbook(workbookId);
+          const sheet = workbook?.getSheetBySheetId(worksheetId);
+
+          if (sheet) {
+            // Get the actual cell data that was changed
+            const { startRow, endRow, startColumn, endColumn } = range;
+            for (let r = startRow; r <= endRow; r++) {
+              for (let c = startColumn; c <= endColumn; c++) {
+                const cellData = sheet.getCell(r, c);
+                if (cellData && cellData.v) {
+                  const cellContent = String(cellData.v).trim();
+                  // Check if the cell content is a prompt for the AI
+                  if (cellContent.startsWith('/ai ')) {
+                    const prompt = cellContent.substring(4).trim(); // Remove '/ai ' prefix
+
+                    if (prompt) {
+                      // Set the active cell for AI response
+                      setActiveCell({ row: r, col: c, sheetId: worksheetId, workbookId: workbookId });
+                      setIsRunning(true); // Indicate AI is running
+                      // Clear the cell content initially or set a "Generating..." message
+                      sheet.setCell(r, c, { v: 'Generating AI response...' });
+
+                      // Send the prompt to the worker
+                      worker.current.postMessage({
+                        type: "generate",
+                        data: [{ role: "user", content: prompt }], // Send as a single message
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      })
+    );
+
+    return () => disposable.dispose(); // Cleanup on unmount
+  }, [univerAPI, status]); // Re-run if univerAPI or status changes
+
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
