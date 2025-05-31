@@ -81,9 +81,15 @@ function App() {
       // Ensure the model is ready before queuing
       if (status !== "ready") {
         console.warn("AI model not ready for formula. Please load the model first.");
-        // Assuming setUniverCellValue is defined globally or passed somehow
-        // For demonstration purposes, I'll comment this out as it's not in the provided scope
-        // setUniverCellValue(targetCellAddress, "ERROR: Model not ready.");
+        // Assuming setUniverCellValue is a function provided by Univer
+        // You might need to implement this or ensure it's globally available
+        // if this code is running within a Univer plugin environment.
+        // For demonstration, let's just log it if Univer isn't defined
+        if (typeof window.setUniverCellValue === 'function') { // Check window for setUniverCellValue
+            window.setUniverCellValue(targetCellAddress, "ERROR: Model not ready.");
+        } else {
+            console.error("window.setUniverCellValue is not defined. Cannot update cell.");
+        }
         return;
       }
 
@@ -162,10 +168,10 @@ function App() {
 
     // --- ADDITION: Handle interruption for formula requests ---
     if (currentFormulaPromise.current) {
-      currentFormulaPromise.current.reject(new Error("AI generation interrupted."));
-      currentFormulaPromise.current = null;
-      currentFormulaTargetCell.current = null;
-      isFormulaTriggered.current = false; // Reset flag
+        currentFormulaPromise.current.reject(new Error("AI generation interrupted."));
+        currentFormulaPromise.current = null;
+        currentFormulaTargetCell.current = null;
+        isFormulaTriggered.current = false; // Reset flag
     }
     // Clear any queued formula requests
     aiFormulaQueue.current = [];
@@ -348,16 +354,16 @@ function App() {
     // with the formula prompt, and the `update`/`complete` cases will handle it.
     // This `useEffect` is primarily for the chat UI's messages.
     if (!isFormulaTriggered.current) {
-      if (messages.filter((x) => x.role === "user").length === 0) {
-        // No user messages yet: do nothing.
-        return;
-      }
-      if (messages.at(-1).role === "assistant") {
-        // Do not update if the last message is from the assistant
-        return;
-      }
-      setTps(null);
-      worker.current.postMessage({ type: "generate", data: messages });
+        if (messages.filter((x) => x.role === "user").length === 0) {
+            // No user messages yet: do nothing.
+            return;
+        }
+        if (messages.at(-1).role === "assistant") {
+            // Do not update if the last message is from the assistant
+            return;
+        }
+        setTps(null);
+        worker.current.postMessage({ type: "generate", data: messages });
     }
   }, [messages, isRunning]); // Rerun when messages or isRunning changes
 
@@ -531,8 +537,8 @@ function App() {
           type="text"
           rows={1}
           value={input}
+          {/* Disable if model not ready OR AI is busy */}
           disabled={status !== "ready" || isRunning}
-          {/* Disable if model not ready OR AI is busy */} {/* <-- FIXED LINE */}
           title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
           onKeyDown={(e) => {
             if (
