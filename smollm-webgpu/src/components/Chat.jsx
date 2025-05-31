@@ -1,124 +1,93 @@
-/* UniverChat.jsx ─ spreadsheet-first chat interface -------------------- */
-import { useEffect, useRef } from "react";
+// src/components/Chat.jsx
+import React, { useEffect, useRef } from 'react';
 
-import {
-  createUniver,
-  defaultTheme,
-  LocaleType,
-  merge,
-} from "@univerjs/presets";
-import { UniverSheetsCorePreset } from "@univerjs/presets/preset-sheets-core";
-import enUS from "@univerjs/presets/preset-sheets-core/locales/en-US";
-import zhCN from "@univerjs/presets/preset-sheets-core/locales/zh-CN";
-import { SetRangeValuesCommand } from "@univerjs/presets/preset-sheets-core";
+// Assuming your global Univer API setup is in index.js or similar
+// and it exposes window.univerAPI
 
-import "@univerjs/presets/lib/styles/preset-sheets-core.css";
+const MESSAGE_COLUMN_USER = 1; // Column B for user messages
+const MESSAGE_COLUMN_ASSISTANT = 2; // Column C for assistant messages
+const START_ROW = 1; // Start writing messages from row 1 (0-indexed)
 
-const THINKING = "…thinking…";
+function Chat({ messages }) {
+  const containerRef = useRef(null);
+  const rowCounter = useRef(START_ROW); // Keep track of the current row for writing
 
-export default function UniverChat() {
-  const hostRef      = useRef(null);       // <div> container for the sheet
-  const sheetRef     = useRef(null);       // Univer sheet instance
-  const workerRef    = useRef(null);       // WebGPU worker
-  const pendingRef   = useRef(null);       // {r, c} of the cell being filled
-
-  /* ────────────────────────────────────────────────────────────────────
-   * 1.  Boot-strap Univer + worker  (runs once)
-   * ────────────────────────────────────────────────────────────────── */
   useEffect(() => {
-    /* ---- 1 a . Univer sheet --------------------------------------- */
-    const { univerAPI } = createUniver({
-      locale : LocaleType.EN_US,
-      locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
-      theme  : defaultTheme,
-      presets: [UniverSheetsCorePreset({ container: hostRef.current })],
-    });
-
-    sheetRef.current = (univerAPI as any).createUniverSheet({
-      name       : "SmolLM2 Chat",
-      rowCount   : 500,
-      columnCount: 3,
-    });
-
-    /* ---- 1 b . WebGPU worker -------------------------------------- */
-    workerRef.current = new Worker(new URL("../worker.js", import.meta.url), {
-      type: "module",
-    });
-    workerRef.current.postMessage({ type: "check" });
-
-    /*  Handle messages from the worker  */
-    workerRef.current.addEventListener("message", ({ data }) => {
-      const sheet = sheetRef.current;
-      if (!sheet || !pendingRef.current) return;
-
-      const { r, c } = pendingRef.current;
-
-      switch (data.status) {
-        case "loading":
-          /* first time → load model immediately */
-          break;
-
-        case "start":
-          sheet.getRange(r, c).setValue(THINKING);
-          break;
-
-        case "update": {
-          /* append partial output in the cell */
-          const cell = sheet.getRange(r, c);
-          const current = cell.getValue() === THINKING ? "" : cell.getValue();
-          cell.setValue(current + data.output);
-          break;
-        }
-
-        case "complete":
-          pendingRef.current = null;
-          break;
-
-        case "error":
-          sheet.getRange(r, c).setValue("[error] " + data.data);
-          pendingRef.current = null;
-          break;
-      }
-    });
-
-    /* ---- 1 c . Intercept every cell edit -------------------------- */
-    univerAPI
-      .getCommandManager()
-      .onCommandExecuted((cmd) => {
-        if (cmd.id !== SetRangeValuesCommand.id) return;
-
-        /* single-cell edits only (ignore drag-fill etc.) */
-        const { rangeData, cellValue } = cmd.params;
-        if (
-          rangeData.startRow !== rangeData.endRow ||
-          rangeData.startColumn !== rangeData.endColumn
-        )
-          return;
-
-        const prompt = Array.isArray(cellValue)
-          ? cellValue[0][0]
-          : cellValue;
-        if (!prompt || prompt === THINKING) return; // empty or internal
-
-        /* fire the model */
-        pendingRef.current = {
-          r: rangeData.startRow,
-          c: rangeData.startColumn,
-        };
-        workerRef.current.postMessage({
-          type: "generate",
-          data: [{ role: "user", content: prompt }],
-        });
-      });
+    // This effect runs only once when the component mounts to
+    // ensure the Univer container is available.
+    // The actual Univer instance is initialized in index.js,
+    // we just need to ensure this div is present.
   }, []);
 
-  /* ────────────────────────────────────────────────────────────────────
-   * 2.  Render (just the container div)                               */
-  /* ────────────────────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    if (!window.univerAPI) {
+      console.error('Univer API not available. Make sure it is initialized and exposed globally.');
+      return;
+    }
+
+    const univerAPI = window.univerAPI;
+    const activeWorkbook = univerAPI.getActiveWorkbook();
+    if (!activeWorkbook) {
+        console.warn('No active workbook found in Univer. Skipping message write.');
+        return;
+    }
+    const activeSheet = activeWorkbook.getActiveSheet();
+    if (!activeSheet) {
+        console.warn('No active sheet found in Univer. Skipping message write.');
+        return;
+    }
+
+    // Only process new messages
+    // This logic assumes `messages` grows monotonically
+    // and we only need to write the very last message.
+    if (messages.length === 0) {
+        // Optionally clear the sheet or add a "Welcome" message if messages are reset
+        // For simplicity, we'll just return here.
+        return;
+    }
+
+    const lastMessage = messages[messages.length - 1];
+
+    // Check if the last message has already been written
+    // This is a simple debounce to prevent re-writing messages on every render
+    // You might need a more robust solution for complex message flows
+    const currentCellValue = activeSheet.getCellByColumnAndRow(
+      lastMessage.role === "user" ? MESSAGE_COLUMN_USER : MESSAGE_COLUMN_ASSISTANT,
+      rowCounter.current - 1 // Check the cell where the last message *would* have been written
+    )?.getDisplayText();
+
+    if (currentCellValue === lastMessage.content) {
+        return; // Already written
+    }
+
+    let column;
+    if (lastMessage.role === 'user') {
+      column = MESSAGE_COLUMN_USER;
+    } else { // role === 'assistant'
+      column = MESSAGE_COLUMN_ASSISTANT;
+    }
+
+    // Write the message to the current row
+    // We're writing to `rowCounter.current` and then incrementing for the next message
+    activeSheet.setCellValue(rowCounter.current, column, lastMessage.content);
+    rowCounter.current++; // Increment for the next message
+
+    // Optional: Auto-scroll to the new message. This is tricky with Univer's internal scroll.
+    // You might need to find a way to access Univer's internal view/scroll methods.
+    // For now, we'll rely on the user to scroll.
+    // A potential strategy would be to activate the cell you just wrote to.
+    activeSheet.activateCell(rowCounter.current - 1, column);
+
+  }, [messages]); // Reruns when messages change
+
   return (
-    <div
-      ref={hostRef}
-      className="flex-1 w-full h-full overflow-hidden dark:bg-gray-900"
-    />
+    // This div will be the container for the Univer Spreadsheet.
+    // Ensure its ID matches what you pass to UniverSheetsCorePreset.
+    <div id="univer" className="w-full h-full univer-chat-container" ref={containerRef}>
+      {/* Univer will inject its canvas/DOM elements here */}
+    </div>
   );
 }
+
+export default Chat;
