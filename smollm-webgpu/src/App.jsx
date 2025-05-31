@@ -1,10 +1,9 @@
 import { useEffect, useState, useRef } from "react";
-import { useWorker } from "./contexts/WorkerContext"; // Import the custom hook
 
 import Chat from "./components/Chat";
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
-import Progress from "./components/Progress"; // Still needed for loading progress display
+import Progress from "./components/Progress";
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -15,52 +14,36 @@ const EXAMPLES = [
 ];
 
 function App() {
-  // Consume the worker context
-  const {
-    status,
-    error,
-    loadingMessage,
-    progressItems,
-    isRunning,
-    tps,
-    numTokens,
-    currentAiQueryTargetCell,
-    chatMessagesHistory, // This is the chat history managed by the context
-    sendAiQueryToWorker, // The unified function to send AI queries
-    onInterrupt,
-    resetChat,
-    loadModel, // Function to trigger model loading
-  } = useWorker();
+  // Create a reference to the worker object.
+  const worker = useRef(null);
 
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
 
-  // Local state for the input field (still managed by App.jsx)
+  // Model loading and progress
+  const [status, setStatus] = useState(null);
+  const [error, setError] = useState(null);
+  const [loadingMessage, setLoadingMessage] = useState("");
+  const [progressItems, setProgressItems] = useState([]);
+  const [isRunning, setIsRunning] = useState(false);
+
+  // Inputs and outputs
   const [input, setInput] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [tps, setTps] = useState(null);
+  const [numTokens, setNumTokens] = useState(null);
 
   function onEnter(message) {
-    if (!message.trim()) return; // Don't send empty messages
+    setMessages((prev) => [...prev, { role: "user", content: message }]);
+    setTps(null);
+    setIsRunning(true);
+    setInput("");
+  }
 
-    // Check if it's an AI sheet command: e.g., "AI:A1: Your prompt here"
-    const aiCommandMatch = message.match(/^AI:([A-Za-z]+\d+):\s*(.*)$/i);
-
-    if (aiCommandMatch) {
-      const targetCell = aiCommandMatch[1].toUpperCase(); // e.g., "A1"
-      const aiPrompt = aiCommandMatch[2].trim();
-
-      if (!aiPrompt) {
-        console.warn("AI command requires a prompt.");
-        // Error handling for UI can be done via context's `setError` if needed
-        return;
-      }
-      sendAiQueryToWorker(aiPrompt, targetCell); // Use the unified function
-      setInput(""); // Clear input after sending
-
-    } else {
-      // It's a regular chat message
-      sendAiQueryToWorker(message, null); // Use the unified function for chat
-      setInput(""); // Clear input after sending
-    }
+  function onInterrupt() {
+    // NOTE: We do not set isRunning to false here because the worker
+    // will send a 'complete' message when it is done.
+    worker.current.postMessage({ type: "interrupt" });
   }
 
   useEffect(() => {
@@ -76,30 +59,136 @@ function App() {
     target.style.height = `${newHeight}px`;
   }
 
-  // This useEffect now *only* handles auto-scrolling for the chat window
-  // It only triggers when a new *chat* message is added and generation is ongoing.
+  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
-    if (!chatContainerRef.current) return;
-
-    // Only scroll if it's a chat update (i.e., last message is assistant) and we are near the bottom
-    // `chatMessagesHistory` is now from context
-    if (chatMessagesHistory.length > 0 && chatMessagesHistory.at(-1).role === "assistant" && isRunning && !currentAiQueryTargetCell) {
-        const element = chatContainerRef.current;
-        if (
-            element.scrollHeight - element.scrollTop - element.clientHeight <
-            STICKY_SCROLL_THRESHOLD
-        ) {
-            element.scrollTop = element.scrollHeight;
-        }
+    // Create the worker if it does not yet exist.
+    if (!worker.current) {
+      worker.current = new Worker(new URL("./worker.js", import.meta.url), {
+        type: "module",
+      });
+      worker.current.postMessage({ type: "check" }); // Do a feature check
     }
-  }, [chatMessagesHistory, isRunning, currentAiQueryTargetCell]); // Reruns when these states change
+
+    // Create a callback function for messages from the worker thread.
+    const onMessageReceived = (e) => {
+      switch (e.data.status) {
+        case "loading":
+          // Model file start load: add a new progress item to the list.
+          setStatus("loading");
+          setLoadingMessage(e.data.data);
+          break;
+
+        case "initiate":
+          setProgressItems((prev) => [...prev, e.data]);
+          break;
+
+        case "progress":
+          // Model file progress: update one of the progress items.
+          setProgressItems((prev) =>
+            prev.map((item) => {
+              if (item.file === e.data.file) {
+                return { ...item, ...e.data };
+              }
+              return item;
+            }),
+          );
+          break;
+
+        case "done":
+          // Model file loaded: remove the progress item from the list.
+          setProgressItems((prev) =>
+            prev.filter((item) => item.file !== e.data.file),
+          );
+          break;
+
+        case "ready":
+          // Pipeline ready: the worker is ready to accept messages.
+          setStatus("ready");
+          break;
+
+        case "start":
+          {
+            // Start generation
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: "" },
+            ]);
+          }
+          break;
+
+        case "update":
+          {
+            // Generation update: update the output text.
+            // Parse messages
+            const { output, tps, numTokens } = e.data;
+            setTps(tps);
+            setNumTokens(numTokens);
+            setMessages((prev) => {
+              const cloned = [...prev];
+              const last = cloned.at(-1);
+              cloned[cloned.length - 1] = {
+                ...last,
+                content: last.content + output,
+              };
+              return cloned;
+            });
+          }
+          break;
+
+        case "complete":
+          // Generation complete: re-enable the "Generate" button
+          setIsRunning(false);
+          break;
+
+        case "error":
+          setError(e.data.data);
+          break;
+      }
+    };
+
+    const onErrorReceived = (e) => {
+      console.error("Worker error:", e);
+    };
+
+    // Attach the callback function as an event listener.
+    worker.current.addEventListener("message", onMessageReceived);
+    worker.current.addEventListener("error", onErrorReceived);
+
+    // Define a cleanup function for when the component is unmounted.
+    return () => {
+      worker.current.removeEventListener("message", onMessageReceived);
+      worker.current.removeEventListener("error", onErrorReceived);
+    };
+  }, []);
+
+  // Send the messages to the worker thread whenever the `messages` state changes.
+  useEffect(() => {
+    if (messages.filter((x) => x.role === "user").length === 0) {
+      // No user messages yet: do nothing.
+      return;
+    }
+    if (messages.at(-1).role === "assistant") {
+      // Do not update if the last message is from the assistant
+      return;
+    }
+    setTps(null);
+    worker.current.postMessage({ type: "generate", data: messages });
+  }, [messages, isRunning]);
+
+  useEffect(() => {
+    if (!chatContainerRef.current || !isRunning) return;
+    const element = chatContainerRef.current;
+    if (
+      element.scrollHeight - element.scrollTop - element.clientHeight <
+      STICKY_SCROLL_THRESHOLD
+    ) {
+      element.scrollTop = element.scrollHeight;
+    }
+  }, [messages, isRunning]);
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-      {/* MODIFIED CONDITION: Show initial loading/error screen if status is null or error. */}
-      {/* This ensures the "Load model" button is visible if not yet loaded or if an error occurred. */}
-      {/* The chatMessagesHistory.length === 0 is now used only for showing the examples */}
-      {(status === null || status === "error") && (
+      {status === null && messages.length === 0 && (
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
             <img
@@ -162,9 +251,11 @@ function App() {
 
             <button
               className="border px-4 py-2 rounded-lg bg-blue-400 text-white hover:bg-blue-500 disabled:bg-blue-100 disabled:cursor-not-allowed select-none"
-              onClick={loadModel} // Use loadModel from context
-              // Button is disabled if currently running or loading
-              disabled={isRunning || status === "loading"}
+              onClick={() => {
+                worker.current.postMessage({ type: "load" });
+                setStatus("loading");
+              }}
+              disabled={status !== null || error !== null}
             >
               Load model
             </button>
@@ -192,9 +283,8 @@ function App() {
           ref={chatContainerRef}
           className="overflow-y-auto scrollbar-thin w-full flex flex-col items-center h-full"
         >
-          <Chat messages={chatMessagesHistory} /> {/* Use chatMessagesHistory from context */}
-          {/* Only show examples if no messages AND no AI query is active */}
-          {chatMessagesHistory.length === 0 && !currentAiQueryTargetCell && (
+          <Chat messages={messages} />
+          {messages.length === 0 && (
             <div>
               {EXAMPLES.map((msg, i) => (
                 <div
@@ -207,17 +297,8 @@ function App() {
               ))}
             </div>
           )}
-
-          {/* New: Display specific message when AI is working on a spreadsheet query */}
-          {isRunning && currentAiQueryTargetCell && (
-            <p className="text-center text-sm min-h-6 text-blue-500 dark:text-blue-300">
-                Casting AI spell for cell {currentAiQueryTargetCell}...
-            </p>
-          )}
-
           <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300">
-            {/* Only show TPS and related info for chat messages, not sheet commands */}
-            {tps && chatMessagesHistory.length > 0 && !currentAiQueryTargetCell && (
+            {tps && messages.length > 0 && (
               <>
                 {!isRunning && (
                   <span>
@@ -225,22 +306,27 @@ function App() {
                     {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
                   </span>
                 )}
-                <>
-                  <span className="font-medium text-center mr-1 text-black dark:text-white">
-                    {tps.toFixed(2)}
-                  </span>
-                  <span className="text-gray-500 dark:text-gray-300">
-                    tokens/second
-                  </span>
-                </>
+                {
+                  <>
+                    <span className="font-medium text-center mr-1 text-black dark:text-white">
+                      {tps.toFixed(2)}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-300">
+                      tokens/second
+                    </span>
+                  </>
+                }
                 {!isRunning && (
                   <>
                     <span className="mr-1">&#41;.</span>
                     <span
                       className="underline cursor-pointer"
-                      onClick={resetChat} // Use resetChat from context
+                      onClick={() => {
+                        worker.current.postMessage({ type: "reset" });
+                        setMessages([]);
+                      }}
                     >
-                      Reset Chat
+                      Reset
                     </span>
                   </>
                 )}
@@ -254,27 +340,27 @@ function App() {
         <textarea
           ref={textareaRef}
           className="scrollbar-thin w-[550px] dark:bg-gray-700 px-3 py-4 rounded-lg bg-transparent border-none outline-none text-gray-800 disabled:text-gray-400 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 disabled:placeholder-gray-200 resize-none disabled:cursor-not-allowed"
-          placeholder="Type your message or AI:A1: Your prompt for cell A1..."
+          placeholder="Type your message..."
           type="text"
           rows={1}
           value={input}
-          disabled={status !== "ready" || isRunning} // Disable if model not ready or any AI generation is happening
+          disabled={status !== "ready"}
           title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
           onKeyDown={(e) => {
             if (
               input.length > 0 &&
-              !isRunning && // Only allow sending if not already running
+              !isRunning &&
               e.key === "Enter" &&
               !e.shiftKey
             ) {
-              e.preventDefault(); // Prevent default behavior of Enter key (new line)
+              e.preventDefault(); // Prevent default behavior of Enter key
               onEnter(input);
             }
           }}
           onInput={(e) => setInput(e.target.value)}
         />
         {isRunning ? (
-          <div className="cursor-pointer" onClick={onInterrupt}> {/* Use onInterrupt from context */}
+          <div className="cursor-pointer" onClick={onInterrupt}>
             <StopIcon className="h-8 w-8 p-1 rounded-md text-gray-800 dark:text-gray-100 absolute right-3 bottom-3" />
           </div>
         ) : input.length > 0 ? (
@@ -304,5 +390,4 @@ function App() {
     </div>
   );
 }
-
 export default App;
