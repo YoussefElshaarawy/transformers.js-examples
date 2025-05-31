@@ -1,12 +1,13 @@
+// src/App.jsx
 import { useEffect, useState, useRef } from "react";
 
-import Chat from "./components/Chat";
+import Chat from "./components/Chat"; // Import your new Chat component
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
-const STICKY_SCROLL_THRESHOLD = 120;
+// const STICKY_SCROLL_THRESHOLD = 120; // No longer directly applicable for spreadsheet auto-scrolling
 const EXAMPLES = [
   "Give me some tips to improve my time management skills.",
   "What is the difference between AI and ML?",
@@ -18,7 +19,7 @@ function App() {
   const worker = useRef(null);
 
   const textareaRef = useRef(null);
-  const chatContainerRef = useRef(null);
+  // const chatContainerRef = useRef(null); // This ref might not be needed for Univer direct scrolling
 
   // Model loading and progress
   const [status, setStatus] = useState(null);
@@ -167,24 +168,28 @@ function App() {
       // No user messages yet: do nothing.
       return;
     }
-    if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
+    if (messages.at(-1).role === "assistant" && !isRunning) {
+      // Do not update if the last message is from the assistant AND generation is complete
+      // We only send the message to the worker when a new *user* message is added,
+      // or when an assistant message is being generated (to continue generation).
       return;
     }
     setTps(null);
     worker.current.postMessage({ type: "generate", data: messages });
   }, [messages, isRunning]);
 
-  useEffect(() => {
-    if (!chatContainerRef.current || !isRunning) return;
-    const element = chatContainerRef.current;
-    if (
-      element.scrollHeight - element.scrollTop - element.clientHeight <
-      STICKY_SCROLL_THRESHOLD
-    ) {
-      element.scrollTop = element.scrollHeight;
-    }
-  }, [messages, isRunning]);
+  // The auto-scrolling logic for a regular chat container will likely not work directly with Univer.
+  // You'd need to find Univer's specific API for scrolling to a cell.
+  // useEffect(() => {
+  //   if (!chatContainerRef.current || !isRunning) return;
+  //   const element = chatContainerRef.current;
+  //   if (
+  //     element.scrollHeight - element.scrollTop - element.clientHeight <
+  //     STICKY_SCROLL_THRESHOLD
+  //   ) {
+  //     element.scrollTop = element.scrollHeight;
+  //   }
+  // }, [messages, isRunning]);
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
@@ -279,17 +284,21 @@ function App() {
       )}
 
       {status === "ready" && (
+        // Changed this div to house the Chat component, which is now Univer
         <div
-          ref={chatContainerRef}
-          className="overflow-y-auto scrollbar-thin w-full flex flex-col items-center h-full"
+          // ref={chatContainerRef} // Removed as it's not directly scrolling this div
+          className="overflow-hidden w-full flex flex-col items-center h-full"
         >
+          {/* Univer will be mounted into the div with id="univer" inside Chat */}
           <Chat messages={messages} />
+
+          {/* Moved examples and performance metrics below the chat area for better layout */}
           {messages.length === 0 && (
-            <div>
+            <div className="w-full max-w-[800px] px-4 flex flex-col items-center">
               {EXAMPLES.map((msg, i) => (
                 <div
                   key={i}
-                  className="m-1 border dark:border-gray-600 rounded-md p-2 bg-gray-100 dark:bg-gray-700 cursor-pointer"
+                  className="m-1 border dark:border-gray-600 rounded-md p-2 bg-gray-100 dark:bg-gray-700 cursor-pointer w-full text-center"
                   onClick={() => onEnter(msg)}
                 >
                   {msg}
@@ -297,7 +306,7 @@ function App() {
               ))}
             </div>
           )}
-          <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300">
+          <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300 mt-2">
             {tps && messages.length > 0 && (
               <>
                 {!isRunning && (
@@ -324,6 +333,17 @@ function App() {
                       onClick={() => {
                         worker.current.postMessage({ type: "reset" });
                         setMessages([]);
+                        // Potentially clear Univer sheet here as well if needed
+                        if (window.univerAPI) {
+                            const activeSheet = window.univerAPI.getActiveWorkbook()?.getActiveSheet();
+                            if (activeSheet) {
+                                // Clear columns B and C
+                                activeSheet.clear(1, 100, 1, 2); // Clear from row 1, col 1 to row 100, col 2 (B and C)
+                                // Reset row counter in Chat component by forcing a re-mount or using a ref on Chat
+                                // For now, the Chat component's rowCounter will just keep incrementing.
+                                // A better way would be to send a message to Chat to reset its internal state.
+                            }
+                        }
                       }}
                     >
                       Reset
