@@ -220,10 +220,11 @@ function App() {
 
 
   return IS_WEBGPU_AVAILABLE ? (
-    // <--- MODIFIED: Removed 'justify-end' from main container
+    // Removed 'justify-end' from main container
     <div className="flex flex-col h-screen mx-auto items text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-      {/* <--- NEW WRAPPER DIV: This div will take up the available space above the input/disclaimer */}
-      <div className="flex-grow w-full overflow-hidden flex flex-col items-center">
+      {/* NEW WRAPPER DIV: This div will take up the available space above the input/disclaimer */}
+      {/* MODIFIED: Removed 'items-center' to allow Chat component to stretch vertically */}
+      <div className="flex-grow w-full overflow-hidden flex flex-col">
         {status === null && messages.length === 0 && (
           <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
             <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
