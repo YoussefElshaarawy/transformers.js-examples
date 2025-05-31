@@ -277,14 +277,26 @@ function App() {
           </div>
         </>
       )}
-
 {status === "ready" && (
   <div
     ref={chatContainerRef}
     className="flex-1 w-full h-full overflow-hidden"
   >
-    {/* ⬇️ spreadsheet-first interface */}
     <UniverChat />
+  </div>
+)}
+
+{/* footer + disclaimer (leave this) */}
+<p className="text-xs text-gray-400 text-center mb-3">
+  Disclaimer: Generated content may be inaccurate or false.
+</p>
+</div>          {/* ← closes the outer flex-column container */}
+
+) : (            {/* WebGPU-unsupported fallback */}
+  <div className="fixed w-screen h-screen bg-black z-10 bg-opacity-[92%] text-white text-2xl font-semibold flex justify-center items-center text-center">
+    WebGPU is not supported
+    <br />
+    by this browser :&#40;
   </div>
 )}
 
