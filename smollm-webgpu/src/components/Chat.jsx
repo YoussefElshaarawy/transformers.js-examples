@@ -1,4 +1,4 @@
-import { marked } from "marked";Add commentMore actions
+import { marked } from "marked";
 import DOMPurify from "dompurify";
 
 import BotIcon from "./icons/BotIcon";
