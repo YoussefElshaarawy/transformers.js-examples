@@ -1,13 +1,13 @@
 // src/App.jsx
 import { useEffect, useState, useRef } from "react";
 
-import Chat from "./components/Chat"; // Import your new Chat component
+import Chat from "./components/Chat";
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
-// const STICKY_SCROLL_THRESHOLD = 120; // No longer directly applicable for spreadsheet auto-scrolling
+const STICKY_SCROLL_THRESHOLD = 120; // This is less relevant for a spreadsheet, but kept for context
 const EXAMPLES = [
   "Give me some tips to improve my time management skills.",
   "What is the difference between AI and ML?",
@@ -178,19 +178,6 @@ function App() {
     worker.current.postMessage({ type: "generate", data: messages });
   }, [messages, isRunning]);
 
-  // The auto-scrolling logic for a regular chat container will likely not work directly with Univer.
-  // You'd need to find Univer's specific API for scrolling to a cell.
-  // useEffect(() => {
-  //   if (!chatContainerRef.current || !isRunning) return;
-  //   const element = chatContainerRef.current;
-  //   if (
-  //     element.scrollHeight - element.scrollTop - element.clientHeight <
-  //     STICKY_SCROLL_THRESHOLD
-  //   ) {
-  //     element.scrollTop = element.scrollHeight;
-  //   }
-  // }, [messages, isRunning]);
-
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
       {status === null && messages.length === 0 && (
@@ -284,15 +271,20 @@ function App() {
       )}
 
       {status === "ready" && (
-        // Changed this div to house the Chat component, which is now Univer
-        <div
-          // ref={chatContainerRef} // Removed as it's not directly scrolling this div
-          className="overflow-hidden w-full flex flex-col items-center h-full"
-        >
-          {/* Univer will be mounted into the div with id="univer" inside Chat */}
-          <Chat messages={messages} />
+        // Changed this div to ensure proper flex layout for Univer
+        <div className="flex flex-col h-full w-full">
 
-          {/* Moved examples and performance metrics below the chat area for better layout */}
+          {/* This div wraps the Chat component (Univer) and uses flex-grow
+              to make it take up all available vertical space */}
+          <div className="flex-grow">
+            <Chat messages={messages} />
+          </div>
+
+          {/* REMOVED: The EXAMPLES block is now completely removed from here.
+             You will no longer see the example prompts once the model is loaded.
+             If you want to display them *within* the spreadsheet, that would
+             require using Univer's API to write them to cells. */}
+          {/*
           {messages.length === 0 && (
             <div className="w-full max-w-[800px] px-4 flex flex-col items-center">
               {EXAMPLES.map((msg, i) => (
@@ -306,6 +298,8 @@ function App() {
               ))}
             </div>
           )}
+          */}
+
           <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300 mt-2">
             {tps && messages.length > 0 && (
               <>
@@ -333,17 +327,7 @@ function App() {
                       onClick={() => {
                         worker.current.postMessage({ type: "reset" });
                         setMessages([]);
-                        // Potentially clear Univer sheet here as well if needed
-                        if (window.univerAPI) {
-                            const activeSheet = window.univerAPI.getActiveWorkbook()?.getActiveSheet();
-                            if (activeSheet) {
-                                // Clear columns B and C
-                                activeSheet.clear(1, 100, 1, 2); // Clear from row 1, col 1 to row 100, col 2 (B and C)
-                                // Reset row counter in Chat component by forcing a re-mount or using a ref on Chat
-                                // For now, the Chat component's rowCounter will just keep incrementing.
-                                // A better way would be to send a message to Chat to reset its internal state.
-                            }
-                        }
+                        // Chat.jsx's useEffect handles clearing the sheet when messages are empty
                       }}
                     >
                       Reset
