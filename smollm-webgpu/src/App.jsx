@@ -278,117 +278,14 @@ function App() {
         </>
       )}
 
-      {status === "ready" && (
-        <div
-          ref={chatContainerRef}
-          className="overflow-y-auto scrollbar-thin w-full flex flex-col items-center h-full"
-        >
-          <Chat messages={messages} />
-          {messages.length === 0 && (
-            <div>
-              {EXAMPLES.map((msg, i) => (
-                <div
-                  key={i}
-                  className="m-1 border dark:border-gray-600 rounded-md p-2 bg-gray-100 dark:bg-gray-700 cursor-pointer"
-                  onClick={() => onEnter(msg)}
-                >
-                  {msg}
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="text-center text-sm min-h-6 text-gray-500 dark:text-gray-300">
-            {tps && messages.length > 0 && (
-              <>
-                {!isRunning && (
-                  <span>
-                    Generated {numTokens} tokens in{" "}
-                    {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
-                  </span>
-                )}
-                {
-                  <>
-                    <span className="font-medium text-center mr-1 text-black dark:text-white">
-                      {tps.toFixed(2)}
-                    </span>
-                    <span className="text-gray-500 dark:text-gray-300">
-                      tokens/second
-                    </span>
-                  </>
-                }
-                {!isRunning && (
-                  <>
-                    <span className="mr-1">&#41;.</span>
-                    <span
-                      className="underline cursor-pointer"
-                      onClick={() => {
-                        worker.current.postMessage({ type: "reset" });
-                        setMessages([]);
-                      }}
-                    >
-                      Reset
-                    </span>
-                  </>
-                )}
-              </>
-            )}
-          </p>
-        </div>
-      )}
-
-      <div className="mt-2 border dark:bg-gray-700 rounded-lg w-[600px] max-w-[80%] max-h-[200px] mx-auto relative mb-3 flex">
-        <textarea
-          ref={textareaRef}
-          className="scrollbar-thin w-[550px] dark:bg-gray-700 px-3 py-4 rounded-lg bg-transparent border-none outline-none text-gray-800 disabled:text-gray-400 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 disabled:placeholder-gray-200 resize-none disabled:cursor-not-allowed"
-          placeholder="Type your message..."
-          type="text"
-          rows={1}
-          value={input}
-          disabled={status !== "ready"}
-          title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
-          onKeyDown={(e) => {
-            if (
-              input.length > 0 &&
-              !isRunning &&
-              e.key === "Enter" &&
-              !e.shiftKey
-            ) {
-              e.preventDefault(); // Prevent default behavior of Enter key
-              onEnter(input);
-            }
-          }}
-          onInput={(e) => setInput(e.target.value)}
-        />
-        {isRunning ? (
-          <div className="cursor-pointer" onClick={onInterrupt}>
-            <StopIcon className="h-8 w-8 p-1 rounded-md text-gray-800 dark:text-gray-100 absolute right-3 bottom-3" />
-          </div>
-        ) : input.length > 0 ? (
-          <div className="cursor-pointer" onClick={() => onEnter(input)}>
-            <ArrowRightIcon
-              className={`h-8 w-8 p-1 bg-gray-800 dark:bg-gray-100 text-white dark:text-black rounded-md absolute right-3 bottom-3`}
-            />
-          </div>
-        ) : (
-          <div>
-            <ArrowRightIcon
-              className={`h-8 w-8 p-1 bg-gray-200 dark:bg-gray-600 text-gray-50 dark:text-gray-800 rounded-md absolute right-3 bottom-3`}
-            />
-          </div>
-        )}
-      </div>
-
-      <p className="text-xs text-gray-400 text-center mb-3">
-        Disclaimer: Generated content may be inaccurate or false.
-      </p>
-    </div>
-  ) : (
-    <div className="fixed w-screen h-screen bg-black z-10 bg-opacity-[92%] text-white text-2xl font-semibold flex justify-center items-center text-center">
-      WebGPU is not supported
-      <br />
-      by this browser :&#40;
-    </div>
-  );
-}
+{status === "ready" && (
+  <div
+    ref={chatContainerRef}
+    className="flex-1 w-full h-full overflow-hidden"
+  >
+    {/* ⬇️ spreadsheet-first interface */}
+    <UniverChat />
+  </div>
+)}
 
 export default App;
