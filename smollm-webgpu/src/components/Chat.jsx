@@ -1,59 +1,124 @@
-import { createUniver, defaultTheme, LocaleType, merge } from '@univerjs/presets';
-import { UniverSheetsCorePreset } from '@univerjs/presets/preset-sheets-core';
-import enUS from '@univerjs/presets/preset-sheets-core/locales/en-US';
-import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
-import { marked } from "marked";
-import DOMPurify from "dompurify";
-import { useState, useEffect } from "react";
+/* UniverChat.jsx ─ spreadsheet-first chat interface -------------------- */
+import { useEffect, useRef } from "react";
 
-function render(text) {
-  return DOMPurify.sanitize(marked.parse(text));
-}
+import {
+  createUniver,
+  defaultTheme,
+  LocaleType,
+  merge,
+} from "@univerjs/presets";
+import { UniverSheetsCorePreset } from "@univerjs/presets/preset-sheets-core";
+import enUS from "@univerjs/presets/preset-sheets-core/locales/en-US";
+import zhCN from "@univerjs/presets/preset-sheets-core/locales/zh-CN";
+import { SetRangeValuesCommand } from "@univerjs/presets/preset-sheets-core";
 
-export default function Chat() {
-  const [messages, setMessages] = useState([]);
-  const [inputValue, setInputValue] = useState("");
+import "@univerjs/presets/lib/styles/preset-sheets-core.css";
 
+const THINKING = "…thinking…";
+
+export default function UniverChat() {
+  const hostRef      = useRef(null);       // <div> container for the sheet
+  const sheetRef     = useRef(null);       // Univer sheet instance
+  const workerRef    = useRef(null);       // WebGPU worker
+  const pendingRef   = useRef(null);       // {r, c} of the cell being filled
+
+  /* ────────────────────────────────────────────────────────────────────
+   * 1.  Boot-strap Univer + worker  (runs once)
+   * ────────────────────────────────────────────────────────────────── */
   useEffect(() => {
+    /* ---- 1 a . Univer sheet --------------------------------------- */
     const { univerAPI } = createUniver({
-      locale: LocaleType.EN_US,
+      locale : LocaleType.EN_US,
       locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
-      theme: defaultTheme,
-      presets: [UniverSheetsCorePreset({ container: 'univer' })],
+      theme  : defaultTheme,
+      presets: [UniverSheetsCorePreset({ container: hostRef.current })],
     });
 
-    univerAPI.createUniverSheet({
-      name: 'Chat',
-      rowCount: 100,
-      columnCount: 2,
+    sheetRef.current = (univerAPI as any).createUniverSheet({
+      name       : "SmolLM2 Chat",
+      rowCount   : 500,
+      columnCount: 3,
     });
 
-    const sheet = univerAPI.getActiveSheet();
+    /* ---- 1 b . WebGPU worker -------------------------------------- */
+    workerRef.current = new Worker(new URL("../worker.js", import.meta.url), {
+      type: "module",
+    });
+    workerRef.current.postMessage({ type: "check" });
 
-    messages.forEach((msg, index) => {
-      if (msg.role === "assistant") {
-        sheet.getCell(index, 0).setValue("Assistant:");
-        sheet.getCell(index, 1).setValue(render(msg.content));
-      } else {
-        sheet.getCell(index, 0).setValue("User:");
-        sheet.getCell(index, 1).setValue(msg.content);
+    /*  Handle messages from the worker  */
+    workerRef.current.addEventListener("message", ({ data }) => {
+      const sheet = sheetRef.current;
+      if (!sheet || !pendingRef.current) return;
+
+      const { r, c } = pendingRef.current;
+
+      switch (data.status) {
+        case "loading":
+          /* first time → load model immediately */
+          break;
+
+        case "start":
+          sheet.getRange(r, c).setValue(THINKING);
+          break;
+
+        case "update": {
+          /* append partial output in the cell */
+          const cell = sheet.getRange(r, c);
+          const current = cell.getValue() === THINKING ? "" : cell.getValue();
+          cell.setValue(current + data.output);
+          break;
+        }
+
+        case "complete":
+          pendingRef.current = null;
+          break;
+
+        case "error":
+          sheet.getRange(r, c).setValue("[error] " + data.data);
+          pendingRef.current = null;
+          break;
       }
     });
-  }, [messages]);
 
-  const handleSendMessage = () => {
-    setMessages([...messages, { role: "user", content: inputValue }]);
-    // Here you can add logic to generate assistant response
-    // For example:
-    setMessages(messages => [...messages, { role: "assistant", content: "This is a response" }]);
-    setInputValue("");
-  };
+    /* ---- 1 c . Intercept every cell edit -------------------------- */
+    univerAPI
+      .getCommandManager()
+      .onCommandExecuted((cmd) => {
+        if (cmd.id !== SetRangeValuesCommand.id) return;
 
+        /* single-cell edits only (ignore drag-fill etc.) */
+        const { rangeData, cellValue } = cmd.params;
+        if (
+          rangeData.startRow !== rangeData.endRow ||
+          rangeData.startColumn !== rangeData.endColumn
+        )
+          return;
+
+        const prompt = Array.isArray(cellValue)
+          ? cellValue[0][0]
+          : cellValue;
+        if (!prompt || prompt === THINKING) return; // empty or internal
+
+        /* fire the model */
+        pendingRef.current = {
+          r: rangeData.startRow,
+          c: rangeData.startColumn,
+        };
+        workerRef.current.postMessage({
+          type: "generate",
+          data: [{ role: "user", content: prompt }],
+        });
+      });
+  }, []);
+
+  /* ────────────────────────────────────────────────────────────────────
+   * 2.  Render (just the container div)                               */
+  /* ────────────────────────────────────────────────────────────────── */
   return (
-    <div>
-      <div id="univer" style={{ height: '80vh', width: '100vw' }} />
-      <input type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)} />
-      <button onClick={handleSendMessage}>Send</button>
-    </div>
+    <div
+      ref={hostRef}
+      className="flex-1 w-full h-full overflow-hidden dark:bg-gray-900"
+    />
   );
 }
