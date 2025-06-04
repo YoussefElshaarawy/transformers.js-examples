@@ -11,6 +11,17 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
+// --- NEW: Export a variable to hold the worker messenger function ---
+export let workerMessenger = null;
+
+// --- NEW: Export a function to set the worker messenger ---
+export function setWorkerMessenger(messenger) {
+  workerMessenger = messenger;
+}
+
+// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
+export let globalUniverAPI = null;
+
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
@@ -20,6 +31,9 @@ const { univerAPI } = createUniver({
   theme: defaultTheme,
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
+
+// --- NEW: Assign univerAPI to the global export ---
+globalUniverAPI = univerAPI;
 
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
@@ -58,6 +72,47 @@ univerAPI.getFormula().registerFunction(
           TAYLORSWIFT: {
             description:
               'Returns a Taylor Swift lyric (optional 1‑5 chooses a specific line).',
+          },
+        },
+      },
+    },
+  }
+);
+
+---
+
+## Register the SMOLLM() custom formula
+
+This is where your spreadsheet function will interact with the AI model.
+
+```javascript
+univerAPI.getFormula().registerFunction(
+  'SMOLLM',
+  async (prompt) => {
+    if (!workerMessenger) {
+      console.error("AI worker messenger is not set!");
+      return "ERROR: AI not ready";
+    }
+
+    // Send the prompt to the worker.
+    // We are deliberately formatting this to look like a chat message
+    // because the worker.js cannot be modified to handle a new type.
+    workerMessenger({
+      type: "generate",
+      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
+    });
+
+    // Return a message indicating generation is in progress.
+    // The actual AI response will appear in the chat UI.
+    return "Generating AI response in chat...";
+  },
+  {
+    description: 'customFunction.SMOLLM.description',
+    locales: {
+      enUS: {
+        customFunction: {
+          SMOLLM: {
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
           },
         },
       },
