@@ -4,7 +4,7 @@ import App from "./App.jsx";
 import "./index.css";
 
 // Import and run the Univer initialization script
-import './univer-init.js'; // <--- ADD THIS LINE
+import './univer-init.js';
 
 const chatRoot = document.getElementById("chat-root");
 if (!chatRoot) {
