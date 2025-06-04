@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger from univer-init.js ---
-import { setWorkerMessenger } from './univer-init.js';
+// --- NEW: Import setWorkerMessenger and globalUniverAPI from univer-init.js ---
+import { setWorkerMessenger, globalUniverAPI } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -34,7 +34,19 @@ function App() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
-  const [numTokens, setNumTokens] = useState(null);
+  const [numTokens, useStateNumTokens] = useState(null);
+
+  // --- NEW: State to track cell updates ---
+  const [cellUpdates, setCellUpdates] = useState({});
+  const currentCellRequest = useRef(null); // To store info for the active cell request
+
+  // Function to set numTokens and potentially trigger cell updates
+  const setNumTokens = (value) => {
+    useStateNumTokens(value);
+    // If there's an active cell request and this is the final token count,
+    // we can assume the final response is being generated.
+    // However, the actual final response comes in the 'complete' message.
+  };
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -77,6 +89,14 @@ function App() {
     setWorkerMessenger((message) => {
         if (worker.current) {
             worker.current.postMessage(message);
+
+            // --- NEW: Store cell info if it's a spreadsheet request ---
+            if (message.cell) {
+                currentCellRequest.current = {
+                    ...message.cell,
+                    output: "" // Initialize output for this cell
+                };
+            }
         } else {
             console.error("AI worker not ready for spreadsheet request.");
         }
@@ -122,39 +142,94 @@ function App() {
         case "start":
           {
             // Start generation
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", content: "" },
-            ]);
+            // Only update chat UI if it's not a direct cell request.
+            // For cell requests, we'll update the cell directly.
+            if (!currentCellRequest.current) {
+                setMessages((prev) => [
+                    ...prev,
+                    { role: "assistant", content: "" },
+                ]);
+            }
           }
           break;
 
         case "update":
           {
             // Generation update: update the output text.
-            // Parse messages
             const { output, tps, numTokens } = e.data;
             setTps(tps);
-            setNumTokens(numTokens);
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: last.content + output,
-              };
-              return cloned;
-            });
+            setNumTokens(numTokens); // Calls our new setter
+            
+            if (currentCellRequest.current) {
+                // If it's a cell request, append output to the cell's content
+                currentCellRequest.current.output += output;
+                // You might choose to update the cell live here, or wait for 'complete'
+                // For simplicity, we'll wait for 'complete' for the final update.
+            } else {
+                // Otherwise, update chat UI
+                setMessages((prev) => {
+                    const cloned = [...prev];
+                    const last = cloned.at(-1);
+                    cloned[cloned.length - 1] = {
+                        ...last,
+                        content: last.content + output,
+                    };
+                    return cloned;
+                });
+            }
           }
           break;
 
         case "complete":
           // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
+
+          if (currentCellRequest.current) {
+              // --- NEW: Update the spreadsheet cell with the final AI response ---
+              const { row, col, sheetId, output } = currentCellRequest.current;
+              
+              if (globalUniverAPI) {
+                  const workbook = globalUniverAPI.getUniver().getCurrentWorkbook();
+                  const worksheet = workbook.getSheetBySheetId(sheetId);
+                  
+                  if (worksheet) {
+                      // Update the cell value
+                      worksheet.getCell(row, col).setValue(output);
+                      
+                      // This forces Univer to re-render the cell
+                      // You might need to trigger a re-calculation if formulas depend on this
+                      // For simple text, setValue often updates the display.
+                      // If not, you might need worksheet.setRangeValues or similar method
+                      // that triggers a render or a re-calculate if the cell is part of other formulas.
+                      // The following line should trigger a formula re-calculation:
+                      globalUniverAPI.getUniver().getUniverPlugin('formula').getFormulaEngine()._calculate();
+                      
+                      console.log(`Cell (${row}, ${col}) updated with AI response: ${output}`);
+                  } else {
+                      console.error(`Worksheet with ID ${sheetId} not found.`);
+                  }
+              } else {
+                  console.error("globalUniverAPI is not available to update cell.");
+              }
+              currentCellRequest.current = null; // Clear the active request
+          }
           break;
 
         case "error":
           setError(e.data.data);
+          // --- NEW: If an error occurs during cell generation, update the cell with the error ---
+          if (currentCellRequest.current) {
+              const { row, col, sheetId } = currentCellRequest.current;
+              if (globalUniverAPI) {
+                  const workbook = globalUniverAPI.getUniver().getCurrentWorkbook();
+                  const worksheet = workbook.getSheetBySheetId(sheetId);
+                  if (worksheet) {
+                      worksheet.getCell(row, col).setValue(`ERROR: ${e.data.data}`);
+                      globalUniverAPI.getUniver().getUniverPlugin('formula').getFormulaEngine()._calculate();
+                  }
+              }
+              currentCellRequest.current = null; // Clear the active request
+          }
           break;
       }
     };
@@ -175,17 +250,22 @@ function App() {
   }, []);
 
   // Send the messages to the worker thread whenever the `messages` state changes.
+  // This useEffect primarily handles chat-based generation.
+  // Cell-based generation is now triggered directly by setWorkerMessenger in univer-init.js.
   useEffect(() => {
+    // Only proceed if a user message was just added and it's not a cell-initiated request
     if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet: do nothing.
       return;
     }
     if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
       return;
     }
-    setTps(null);
-    worker.current.postMessage({ type: "generate", data: messages });
+
+    // Check if this is a chat-initiated request (i.e., not a cell request being processed)
+    if (!currentCellRequest.current) {
+      setTps(null);
+      worker.current.postMessage({ type: "generate", data: messages });
+    }
   }, [messages, isRunning]);
 
   useEffect(() => {
@@ -319,14 +399,16 @@ function App() {
                     {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
                   </span>
                 )}
-                <>
-                  <span className="font-medium text-center mr-1 text-black dark:text-white">
-                    {tps.toFixed(2)}
-                  </span>
-                  <span className="text-gray-500 dark:text-gray-300">
-                    tokens/second
-                  </span>
-                </>
+                {
+                  <>
+                    <span className="font-medium text-center mr-1 text-black dark:text-white">
+                      {tps.toFixed(2)}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-300">
+                      tokens/second
+                    </span>
+                  </>
+                }
                 {!isRunning && (
                   <>
                     <span className="mr-1">&#41;.</span>
