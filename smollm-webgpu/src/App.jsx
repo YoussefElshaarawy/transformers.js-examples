@@ -36,13 +36,7 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
-  // --- NEW: Ref to store information about the active spreadsheet cell request ---
-  // This will hold { row, col, sheetId, accumulatedOutput } when a SMOLLM call is active.
-  const spreadsheetCellTarget = useRef(null);
-
   function onEnter(message) {
-    // When a chat message is entered, clear any active spreadsheet target
-    spreadsheetCellTarget.current = null; 
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
     setIsRunning(true);
@@ -50,6 +44,8 @@ function App() {
   }
 
   function onInterrupt() {
+    // NOTE: We do not set isRunning to false here because the worker
+    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
   }
 
@@ -78,19 +74,9 @@ function App() {
 
     // --- NEW: Provide the worker messenger to univer-init.js ---
     // This allows the SMOLLM function in the sheet to send messages to the worker.
+    // It also allows the sheet to pass its cell info.
     setWorkerMessenger((message) => {
         if (worker.current) {
-            // If the message from Univer includes cellInfo, it's a spreadsheet request
-            if (message.cellInfo) {
-                // Store the target cell and initialize its output accumulator
-                spreadsheetCellTarget.current = {
-                    ...message.cellInfo, // { row, col, sheetId }
-                    accumulatedOutput: "" // Initialize output for this cell
-                };
-            } else {
-                // If it's a chat message, ensure no spreadsheet request is active
-                spreadsheetCellTarget.current = null;
-            }
             worker.current.postMessage(message);
         } else {
             console.error("AI worker not ready for spreadsheet request.");
@@ -101,6 +87,7 @@ function App() {
     const onMessageReceived = (e) => {
       switch (e.data.status) {
         case "loading":
+          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -110,6 +97,7 @@ function App() {
           break;
 
         case "progress":
+          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
@@ -121,94 +109,85 @@ function App() {
           break;
 
         case "done":
+          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
             prev.filter((item) => item.file !== e.data.file),
           );
           break;
 
         case "ready":
+          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
         case "start":
           {
-            // Always add a new assistant message to chat, regardless of source
-            setMessages((prev) => [
+            // Start generation for chat UI
+            // Only add assistant message to chat if source is NOT 'sheet'
+            if (e.data.source !== 'sheet') {
+              setMessages((prev) => [
                 ...prev,
                 { role: "assistant", content: "" },
-            ]);
+              ]);
+            }
           }
           break;
 
         case "update":
           {
-            const { output, tps, numTokens } = e.data;
-            setTps(tps);
-            setNumTokens(numTokens);
-            
-            // Always update chat UI (this is the blueprint behavior)
-            setMessages((prev) => {
+            // Generation update: update the output text for chat UI
+            // Only update chat messages if source is NOT 'sheet'
+            if (e.data.source !== 'sheet') {
+              const { output, tps, numTokens } = e.data;
+              setTps(tps);
+              setNumTokens(numTokens);
+              setMessages((prev) => {
                 const cloned = [...prev];
                 const last = cloned.at(-1);
                 cloned[cloned.length - 1] = {
-                    ...last,
-                    content: last.content + output,
+                  ...last,
+                  content: last.content + output,
                 };
                 return cloned;
-            });
-
-            // --- NEW: If a spreadsheet request is active, accumulate output for the cell ---
-            if (spreadsheetCellTarget.current) {
-                spreadsheetCellTarget.current.accumulatedOutput += output;
+              });
             }
           }
           break;
 
         case "complete":
+          // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
 
-          // --- NEW: If a spreadsheet request was active, update the cell with the final response ---
-          if (spreadsheetCellTarget.current) {
-              const { row, col, sheetId, accumulatedOutput } = spreadsheetCellTarget.current;
-              
-              if (globalUniverAPI) {
-                  const workbook = globalUniverAPI.getUniver().getCurrentWorkbook();
-                  const worksheet = workbook.getSheetBySheetId(sheetId);
-                  
-                  if (worksheet) {
-                      // Update the cell value with the accumulated AI response
-                      worksheet.getCell(row, col).setValue(accumulatedOutput);
-                      // Trigger a recalculation to ensure display updates and formulas dependent on it
-                      // This is crucial for Univer to render the new value.
-                      globalUniverAPI.getUniver().getUniverPlugin('formula').getFormulaEngine()._calculate();
-                      
-                      console.log(`Cell (${row}, ${col}) updated with AI response: ${accumulatedOutput}`);
-                  } else {
-                      console.error(`Worksheet with ID ${sheetId} not found.`);
-                  }
-              } else {
-                  console.error("globalUniverAPI is not available to update cell.");
-              }
-              // Clear the active spreadsheet request after completion
-              spreadsheetCellTarget.current = null;
+          // --- NEW: Handle spreadsheet cell update ---
+          if (e.data.source === 'sheet' && e.data.cellInfo && globalUniverAPI) {
+            const { output, cellInfo } = e.data;
+            try {
+                const workbook = globalUniverAPI.getSheets().getActiveWorkbook();
+                if (workbook) {
+                    // Try to get the sheet by ID first for robustness
+                    const sheet = workbook.getSheetById(cellInfo.sheetId);
+                    if (sheet) {
+                        // Assuming row and column are 0-indexed as per Univer API
+                        sheet.getRange(cellInfo.row, cellInfo.column).setValue(output);
+                        console.log(`Updated cell R${cellInfo.row+1}C${cellInfo.column+1} on sheet ${cellInfo.sheetId} with AI response.`);
+                    } else {
+                        console.warn(`Sheet with ID ${cellInfo.sheetId} not found for cell update.`);
+                    }
+                } else {
+                    console.warn("No active workbook found for cell update.");
+                }
+            } catch (updateError) {
+                console.error("Error updating Univer cell:", updateError);
+            }
+          } else if (e.data.source !== 'sheet') {
+            // Original chat update logic (only if not a sheet request)
+            setTps(e.data.tps); // Assuming tps/numTokens also come on complete for chat
+            setNumTokens(e.data.numTokens);
           }
           break;
 
         case "error":
           setError(e.data.data);
-          // --- NEW: If an error occurs during cell generation, update the cell with the error ---
-          if (spreadsheetCellTarget.current) {
-              const { row, col, sheetId } = spreadsheetCellTarget.current;
-              if (globalUniverAPI) {
-                  const workbook = globalUniverAPI.getUniver().getCurrentWorkbook();
-                  const worksheet = workbook.getSheetBySheetId(sheetId);
-                  if (worksheet) {
-                      worksheet.getCell(row, col).setValue(`ERROR: ${e.data.data}`);
-                      globalUniverAPI.getUniver().getUniverPlugin('formula').getFormulaEngine()._calculate();
-                  }
-              }
-              spreadsheetCellTarget.current = null; // Clear the active request
-          }
           break;
       }
     };
@@ -229,23 +208,19 @@ function App() {
   }, []);
 
   // Send the messages to the worker thread whenever the `messages` state changes.
-  // This useEffect now ONLY handles chat-based generation.
-  // Cell-based generation is triggered directly by setWorkerMessenger in univer-init.js.
+  // This useEffect primarily drives the chat functionality.
   useEffect(() => {
-    // Only proceed if a user message was just added and it's NOT a spreadsheet-initiated request
     if (messages.filter((x) => x.role === "user").length === 0) {
+      // No user messages yet: do nothing.
       return;
     }
     if (messages.at(-1).role === "assistant") {
+      // Do not update if the last message is from the assistant (implies it's a response already)
       return;
     }
-
-    // Only send to worker if no spreadsheet request is currently active
-    // This prevents the chat useEffect from re-sending a prompt that originated from SMOLLM
-    if (!spreadsheetCellTarget.current) {
-      setTps(null);
-      worker.current.postMessage({ type: "generate", data: messages });
-    }
+    setTps(null);
+    // When a user types into the chat input, send it to the worker
+    worker.current.postMessage({ type: "generate", data: messages, source: 'chat' }); // Add source: 'chat'
   }, [messages, isRunning]);
 
   useEffect(() => {
@@ -379,16 +354,14 @@ function App() {
                     {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
                   </span>
                 )}
-                {
-                  <>
-                    <span className="font-medium text-center mr-1 text-black dark:text-white">
-                      {tps.toFixed(2)}
-                    </span>
-                    <span className="text-gray-500 dark:text-gray-300">
-                      tokens/second
-                    </span>
-                  </>
-                }
+                <>
+                  <span className="font-medium text-center mr-1 text-black dark:text-white">
+                    {tps.toFixed(2)}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-300">
+                    tokens/second
+                  </span>
+                </>
                 {!isRunning && (
                   <>
                     <span className="mr-1">&#41;.</span>
