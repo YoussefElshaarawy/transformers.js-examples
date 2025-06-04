@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-
-import { setWorkerMessenger } from './univer-init.jsx';
+// --- NEW: Import globalUniverAPI to access spreadsheet commands ---
+import { setWorkerMessenger, globalUniverAPI } from './univer-init.jsx';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -28,7 +28,7 @@ function App() {
   const [error, setError] = useState(null);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isRunning, setIsRunning] = useState(false); // Indicates if ANY generation is in progress
 
   // Inputs and outputs
   const [input, setInput] = useState("");
@@ -36,17 +36,31 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
+  // --- NEW: Queue for spreadsheet-triggered AI requests ---
+  const [spreadsheetRequestQueue, setSpreadsheetRequestQueue] = useState([]);
+  // --- NEW: Holds the current active spreadsheet request ---
+  const [currentSpreadsheetRequest, setCurrentSpreadsheetRequest] = useState(null);
+  // --- NEW: State to track if worker is busy with a chat request ---
+  const [isWorkerBusyWithChat, setIsWorkerBusyWithChat] = useState(false);
+
+
   function onEnter(message) {
+    // This is for chat input, always append to messages
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
-    setIsRunning(true);
+    setIsRunning(true); // Worker will be busy
+    setIsWorkerBusyWithChat(true); // Mark worker busy with chat request
     setInput("");
   }
 
   function onInterrupt() {
-    // NOTE: We do not set isRunning to false here because the worker
-    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
+    // When interrupting, both chat and spreadsheet requests should stop.
+    // The worker will send 'complete' when done.
+    setIsRunning(false); // Optimistically set to false, worker will confirm
+    setIsWorkerBusyWithChat(false); // Reset chat busy state
+    setCurrentSpreadsheetRequest(null); // Clear current spreadsheet request if any
+    setSpreadsheetRequestQueue([]); // Clear any pending spreadsheet requests
   }
 
   useEffect(() => {
@@ -64,29 +78,43 @@ function App() {
 
   // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
-    // Create the worker if it does not yet exist.
     if (!worker.current) {
       worker.current = new Worker(new URL("./worker.js", import.meta.url), {
         type: "module",
       });
-      worker.current.postMessage({ type: "check" }); // Do a feature check
+      worker.current.postMessage({ type: "check" });
     }
 
-    // --- NEW: Provide the worker messenger to univer-init.js ---
+    // Provide the worker messenger to univer-init.js
     // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
-        if (worker.current) {
+      if (worker.current) {
+        // --- NEW: Handle messages from SMOLLM formula ---
+        if (message.source === 'formula') {
+          // If worker is busy with a chat request or another spreadsheet request, queue it
+          if (isRunning) { // isRunning true means worker is busy with chat or another formula
+            setSpreadsheetRequestQueue(prevQueue => [...prevQueue, message]);
+            console.log("SMOLLM request queued. Queue size:", prevQueue.length + 1);
+          } else {
+            // Worker is free, process this spreadsheet request immediately
+            setCurrentSpreadsheetRequest(message);
+            setIsRunning(true); // Mark worker as busy
             worker.current.postMessage(message);
+            console.log("SMOLLM request sent to worker immediately.");
+          }
         } else {
-            console.error("AI worker not ready for spreadsheet request.");
+          // This is a chat request, send directly
+          worker.current.postMessage(message);
         }
+      } else {
+        console.error("AI worker not ready for request.");
+      }
     });
 
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
       switch (e.data.status) {
         case "loading":
-          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -96,7 +124,6 @@ function App() {
           break;
 
         case "progress":
-          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
@@ -108,85 +135,147 @@ function App() {
           break;
 
         case "done":
-          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
             prev.filter((item) => item.file !== e.data.file),
           );
           break;
 
         case "ready":
-          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
         case "start":
           {
-            // Start generation
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", content: "" },
-            ]);
+            // Only append to chat messages if it's a chat request
+            if (e.data.source !== 'formula') { // Assuming worker will echo source
+                setMessages((prev) => [
+                    ...prev,
+                    { role: "assistant", content: "" },
+                ]);
+            }
           }
           break;
 
         case "update":
           {
-            // Generation update: update the output text.
-            // Parse messages
             const { output, tps, numTokens } = e.data;
             setTps(tps);
             setNumTokens(numTokens);
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: last.content + output,
-              };
-              return cloned;
-            });
+
+            // --- NEW: Conditional update for chat vs. spreadsheet ---
+            if (e.data.source === 'formula' && currentSpreadsheetRequest) {
+                // If it's a formula output, update the target cell directly
+                // Note: 'update' messages usually send incremental output.
+                // For a single cell update, we might only want the 'complete' message.
+                // However, if we want streaming, we'd need to append.
+                // For simplicity, let's assume final update is done on 'complete'.
+                // If you want streaming, this logic would need to accumulate output.
+                // For now, we'll just show chat for update messages.
+                // We'll handle the final result on 'complete'.
+            } else if (e.data.source !== 'formula') { // Chat updates
+                setMessages((prev) => {
+                    const cloned = [...prev];
+                    const last = cloned.at(-1);
+                    cloned[cloned.length - 1] = {
+                        ...last,
+                        content: last.content + output,
+                    };
+                    return cloned;
+                });
+            }
           }
           break;
 
         case "complete":
-          // Generation complete: re-enable the "Generate" button
-          setIsRunning(false);
+          {
+            const { output, source } = e.data;
+            setIsRunning(false); // Worker is now free
+
+            if (source === 'formula' && currentSpreadsheetRequest) {
+                // This is the final output for the spreadsheet formula
+                if (globalUniverAPI && currentSpreadsheetRequest.targetCell) {
+                    const { row, column, sheetId, workbookId } = currentSpreadsheetRequest.targetCell;
+
+                    // Execute command to place output directly into the cell
+                    globalUniverAPI.executeCommand('sheet.command.set-range-values', {
+                        value: { v: output },
+                        range: {
+                            startRow: row,
+                            endRow: row,
+                            startColumn: column,
+                            endColumn: column,
+                            sheetId: sheetId,
+                            workbookId: workbookId,
+                        },
+                    });
+                    console.log(`Output placed in cell: R${row + 1}C${column + 1}`);
+                } else {
+                    console.warn("Could not update formula cell, targetCell or UniverAPI not available.");
+                }
+                setCurrentSpreadsheetRequest(null); // Clear the active spreadsheet request
+
+                // --- NEW: Process next item in queue if available ---
+                if (spreadsheetRequestQueue.length > 0) {
+                    const nextRequest = spreadsheetRequestQueue[0];
+                    setSpreadsheetRequestQueue(prevQueue => prevQueue.slice(1)); // Remove from queue
+                    setCurrentSpreadsheetRequest(nextRequest); // Set as current
+                    setIsRunning(true); // Mark worker as busy again
+                    worker.current.postMessage(nextRequest); // Send to worker
+                    console.log("Processing next SMOLLM request from queue.");
+                } else {
+                    // No more spreadsheet requests, check if worker was busy with chat
+                    setIsWorkerBusyWithChat(false);
+                }
+
+            } else { // This was a chat request
+                setIsWorkerBusyWithChat(false);
+                // The 'update' case already appended content for chat messages
+            }
+          }
           break;
 
         case "error":
           setError(e.data.data);
+          // If an error occurs, clear current request and queue
+          setIsRunning(false);
+          setIsWorkerBusyWithChat(false);
+          setCurrentSpreadsheetRequest(null);
+          setSpreadsheetRequestQueue([]);
           break;
       }
     };
 
     const onErrorReceived = (e) => {
       console.error("Worker error:", e);
+      // Also handle errors by clearing state
+      setError("An unexpected worker error occurred.");
+      setIsRunning(false);
+      setIsWorkerBusyWithChat(false);
+      setCurrentSpreadsheetRequest(null);
+      setSpreadsheetRequestQueue([]);
     };
 
-    // Attach the callback function as an event listener.
     worker.current.addEventListener("message", onMessageReceived);
     worker.current.addEventListener("error", onErrorReceived);
 
-    // Define a cleanup function for when the component is unmounted.
     return () => {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, [spreadsheetRequestQueue, currentSpreadsheetRequest, isWorkerBusyWithChat, isRunning]); // Dependencies for useEffect
+
 
   // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
-    if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet: do nothing.
-      return;
+    // Only send chat messages if worker is not busy with a formula request
+    // and if the last message is a user message and not a placeholder.
+    if (!isWorkerBusyWithChat && messages.filter((x) => x.role === "user").length > 0 && messages.at(-1).role === "user") {
+        setTps(null);
+        setIsRunning(true); // Mark worker busy with chat request
+        setIsWorkerBusyWithChat(true); // Mark worker busy with chat request
+        worker.current.postMessage({ type: "generate", data: messages, source: 'chat' }); // Mark source as 'chat'
     }
-    if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
-      return;
-    }
-    setTps(null);
-    worker.current.postMessage({ type: "generate", data: messages });
-  }, [messages, isRunning]);
+  }, [messages]); // Changed dependency from [messages, isRunning] to just [messages] and added isWorkerBusyWithChat check
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
@@ -355,16 +444,16 @@ function App() {
           type="text"
           rows={1}
           value={input}
-          disabled={status !== "ready"}
-          title={status === "ready" ? "Model is ready" : "Model not loaded yet"}
+          disabled={status !== "ready" || isRunning} {/* Disable input if worker is busy */}
+          title={status === "ready" && !isRunning ? "Model is ready" : "Model is busy or not loaded"}
           onKeyDown={(e) => {
             if (
               input.length > 0 &&
-              !isRunning &&
+              !isRunning && // Ensure worker is not busy with anything
               e.key === "Enter" &&
               !e.shiftKey
             ) {
-              e.preventDefault(); // Prevent default behavior of Enter key
+              e.preventDefault();
               onEnter(input);
             }
           }}
