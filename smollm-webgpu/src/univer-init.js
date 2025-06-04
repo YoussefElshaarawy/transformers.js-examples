@@ -79,13 +79,9 @@ univerAPI.getFormula().registerFunction(
   }
 );
 
----
-
-## Register the SMOLLM() custom formula
-
-This is where your spreadsheet function will interact with the AI model.
-
-```javascript
+/* ------------------------------------------------------------------ */
+/* 4. Register the SMOLLM() custom formula */
+/* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
   async (prompt) => {
