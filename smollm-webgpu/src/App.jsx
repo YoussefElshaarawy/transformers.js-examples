@@ -444,7 +444,7 @@ function App() {
           type="text"
           rows={1}
           value={input}
-          disabled={status !== "ready" || isRunning} {/* Disable input if worker is busy */}
+        447|            disabled={status !== "ready" || isRunning} /* Disable input if worker is busy */
           title={status === "ready" && !isRunning ? "Model is ready" : "Model is busy or not loaded"}
           onKeyDown={(e) => {
             if (
