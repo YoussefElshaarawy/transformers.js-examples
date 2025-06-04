@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger from univer-init.js ---
-import { setWorkerMessenger } from './univer-init.js';
+
+import { setWorkerMessenger } from './univer-init.jsx';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
