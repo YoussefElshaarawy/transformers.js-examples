@@ -19,7 +19,7 @@ export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
+// --- NEW: Export globalUniverAPI so it can be used in App.jsx for cell updates ---
 export let globalUniverAPI = null;
 
 /* ------------------------------------------------------------------ */
@@ -33,7 +33,7 @@ const { univerAPI } = createUniver({
 });
 
 // --- NEW: Assign univerAPI to the global export ---
-globalUniverAPI = univerAPI;
+globalUniverAPI = univerAPI; // This makes univerAPI accessible to App.jsx
 
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
@@ -84,23 +84,32 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  async (prompt) => {
+  (prompt, context) => { // context provides cell information!
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
       return "ERROR: AI not ready";
     }
 
-    // Send the prompt to the worker.
+    // Get the current cell's location from the context
+    // The context object provided by Univer's custom function API
+    // should contain the source cell's row and column.
+    const row = context.row;
+    const col = context.col;
+    const sheetId = context.sheetId; // Also get the sheet ID
+
+    // Send the prompt to the worker, including the cell's coordinates.
     // We are deliberately formatting this to look like a chat message
     // because the worker.js cannot be modified to handle a new type.
+    // We add a 'cell' field to indicate this is a spreadsheet request.
     workerMessenger({
       type: "generate",
-      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
+      data: [{ role: "user", content: prompt }], // Worker expects an array of messages
+      cell: { row, col, sheetId } // Pass cell info to App.jsx via workerMessenger
     });
 
     // Return a message indicating generation is in progress.
-    // The actual AI response will appear in the chat UI.
-    return "Generating AI response in chat...";
+    // App.jsx will update this cell with the actual AI response later.
+    return "Generating...";
   },
   {
     description: 'customFunction.SMOLLM.description',
@@ -108,7 +117,7 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat AND cell.',
           },
         },
       },
