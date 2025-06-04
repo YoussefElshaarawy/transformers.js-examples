@@ -1,9 +1,8 @@
-// univer-init.js
 import {
-    createUniver,
-    defaultTheme,
-    LocaleType,
-    merge,
+  createUniver,
+  defaultTheme,
+  LocaleType,
+  merge,
 } from '@univerjs/presets';
 import { UniverSheetsCorePreset } from '@univerjs/presets/preset-sheets-core';
 import enUS from '@univerjs/presets/preset-sheets-core/locales/en-US';
@@ -17,144 +16,200 @@ export let workerMessenger = null;
 
 // --- NEW: Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
-    workerMessenger = messenger;
+  workerMessenger = messenger;
 }
 
 // --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
 /* ------------------------------------------------------------------ */
+/* NEW: Custom UI for manual cell input */
+/* ------------------------------------------------------------------ */
+// WARNING: Adding direct DOM manipulation in univer-init.js is generally
+// not recommended for React applications. It's better to manage UI
+// components and their state within App.jsx. This is provided to
+// fulfill the specific request.
+
+// Create a container for the new UI elements
+const customUiContainer = document.createElement('div');
+customUiContainer.id = 'custom-cell-input-ui';
+customUiContainer.style.padding = '10px';
+customUiContainer.style.borderBottom = '1px solid #ccc';
+customUiContainer.style.marginBottom = '10px';
+customUiContainer.style.backgroundColor = '#f0f0f0';
+customUiContainer.style.display = 'flex';
+customUiContainer.style.gap = '10px';
+customUiContainer.style.alignItems = 'center';
+
+
+const cellAddressInput = document.createElement('input');
+cellAddressInput.type = 'text';
+cellAddressInput.placeholder = 'Enter cell (e.g., A1)';
+cellAddressInput.style.padding = '5px';
+cellAddressInput.style.border = '1px solid #aaa';
+cellAddressInput.style.borderRadius = '3px';
+cellAddressInput.style.flex = '0 0 120px';
+
+
+const cellValueInput = document.createElement('input');
+cellValueInput.type = 'text';
+cellValueInput.placeholder = 'Enter value';
+cellValueInput.style.padding = '5px';
+cellValueInput.style.border = '1px solid #aaa';
+cellValueInput.style.borderRadius = '3px';
+cellValueInput.style.flexGrow = '1';
+
+
+const setCellButton = document.createElement('button');
+setCellButton.textContent = 'Set Cell Value';
+setCellButton.style.padding = '5px 10px';
+setCellButton.style.backgroundColor = '#4CAF50';
+setCellButton.style.color = 'white';
+setCellButton.style.border = 'none';
+setCellButton.style.borderRadius = '3px';
+setCellButton.style.cursor = 'pointer';
+
+customUiContainer.appendChild(cellAddressInput);
+customUiContainer.appendChild(cellValueInput);
+customUiContainer.appendChild(setCellButton);
+
+// Prepend to body so it appears at the top of your page
+document.body.prepend(customUiContainer); 
+
+/* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
 const { univerAPI } = createUniver({
-    locale: LocaleType.EN_US,
-    locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
-    theme: defaultTheme,
-    presets: [UniverSheetsCorePreset({ container: 'univer' })],
+  locale: LocaleType.EN_US,
+  locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
+  theme: defaultTheme,
+  presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
 // --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
 
+// --- NEW: Add event listener for the custom UI button ---
+setCellButton.addEventListener('click', () => {
+    const cellAddress = cellAddressInput.value.trim().toUpperCase(); // Convert to uppercase for A1
+    const cellValue = cellValueInput.value;
+
+    if (!cellAddress) {
+        alert('Please enter a cell address (e.g., A1)');
+        return;
+    }
+
+    if (!globalUniverAPI) {
+        console.error("Univer API is not initialized yet!");
+        alert("Spreadsheet not ready. Please wait for Univer to load.");
+        return;
+    }
+
+    try {
+        // Attempt to get the active workbook and sheet to set the value
+        const workbook = globalUniverAPI.getSheets().getActiveWorkbook();
+        if (workbook) {
+            const sheet = workbook.getActiveSheet(); // Assumes you're working on the currently active sheet
+            if (sheet) {
+                // UniverJS's getRange method directly supports A1 notation (e.g., "A1", "B5")
+                sheet.getRange(cellAddress).setValue(cellValue);
+                console.log(`Successfully set cell ${cellAddress} to: "${cellValue}"`);
+                // Optionally clear inputs after setting
+                // cellAddressInput.value = '';
+                // cellValueInput.value = '';
+            } else {
+                alert("No active sheet found in the workbook.");
+            }
+        } else {
+            alert("No active workbook found.");
+        }
+    } catch (e) {
+        console.error("Error setting cell value:", e);
+        alert(`Failed to set cell ${cellAddress}: ${e.message}`);
+    }
+});
+
+
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
 /* ------------------------------------------------------------------ */
 univerAPI.createUniverSheet({
-    name: 'Hello Univer',
-    rowCount: 100,
-    columnCount: 100,
+  name: 'Hello Univer',
+  rowCount: 100,
+  columnCount: 100,
 });
 
 /* ------------------------------------------------------------------ */
 /* 3. Register the TAYLORSWIFT() custom formula */
 /* ------------------------------------------------------------------ */
 const LYRICS = [
-    "Cause darling I'm a nightmare dressed like a daydream",
-    "We're happy, free, confused and lonely at the same time",
-    "You call me up again just to break me like a promise",
-    "I remember it all too well",
-    "Loving him was red—burning red",
+  "Cause darling I'm a nightmare dressed like a daydream",
+  "We're happy, free, confused and lonely at the same time",
+  "You call me up again just to break me like a promise",
+  "I remember it all too well",
+  "Loving him was red—burning red",
 ];
 
 univerAPI.getFormula().registerFunction(
-    'TAYLORSWIFT',
-    (...args) => {
-        const value = Array.isArray(args[0]) ? args[0][0] : args[0];
-        const idx = Number(value);
-        return idx >= 1 && idx <= LYRICS.length
-            ? LYRICS[idx - 1]
-            : LYRICS[Math.floor(Math.random() * LYRICS.length)];
-    },
-    {
-        description: 'customFunction.TAYLORSWIFT.description',
-        locales: {
-            enUS: {
-                customFunction: {
-                    TAYLORSWIFT: {
-                        description:
-                            'Returns a Taylor Swift lyric (optional 1‑5 chooses a specific line).',
-                    },
-                },
-            },
+  'TAYLORSWIFT',
+  (...args) => {
+    const value = Array.isArray(args[0]) ? args[0][0] : args[0];
+    const idx = Number(value);
+    return idx >= 1 && idx <= LYRICS.length
+      ? LYRICS[idx - 1]
+      : LYRICS[Math.floor(Math.random() * LYRICS.length)];
+  },
+  {
+    description: 'customFunction.TAYLORSWIFT.description',
+    locales: {
+      enUS: {
+        customFunction: {
+          TAYLORSWIFT: {
+            description:
+              'Returns a Taylor Swift lyric (optional 1‑5 chooses a specific line).',
+          },
         },
-    }
+      },
+    },
+  }
 );
-
-/* ------------------------------------------------------------------ */
-/* Helper to convert 0-indexed row/column to A1 notation */
-/* ------------------------------------------------------------------ */
-function toA1Notation(row, col) {
-    let colStr = '';
-    let dividend = col + 1; // Convert 0-indexed column to 1-indexed for A1
-    while (dividend > 0) {
-        const modulo = (dividend - 1) % 26;
-        colStr = String.fromCharCode(65 + modulo) + colStr;
-        dividend = Math.floor((dividend - modulo) / 26);
-    }
-    return `${colStr}${row + 1}`; // Convert 0-indexed row to 1-indexed for A1
-}
-
 
 /* ------------------------------------------------------------------ */
 /* 4. Register the SMOLLM() custom formula */
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
-    'SMOLLM',
-    // IMPORTANT ASSUMPTION: This assumes Univer's custom function API
-    // passes a `context` object as a *second* argument to the formula function,
-    // which contains the `sheetId`, `row`, and `column` of the cell where the formula is executed.
-    // If Univer's actual API differs (e.g., provides context differently or not at all
-    // to the formula function), this part will need to be adjusted based on Univer's documentation.
-    (prompt, context) => {
-        if (!workerMessenger) {
-            console.error("AI worker messenger is not set!");
-            return "ERROR: AI not ready";
-        }
-
-        const actualPrompt = Array.isArray(prompt) ? prompt[0] : prompt;
-
-        // Extract cell information from the context.
-        // These property names (`sheetId`, `row`, `column`) are assumed based on common spreadsheet API patterns.
-        const sheetId = context?.sheetId;
-        const row = context?.row;
-        const column = context?.column;
-
-        // Fallback or error handling if cell context is not provided
-        if (row === undefined || column === undefined || sheetId === undefined) {
-             console.error("Could not determine calling cell's sheetId/row/column for SMOLLM. Ensure Univer custom formula context provides this information.");
-             return "ERROR: Cell context missing";
-        }
-
-        const cellReference = toA1Notation(row, column); // Convert numerical row/col to A1 notation (e.g., "A1", "B5")
-        console.log(`SMOLLM called from: Sheet ${sheetId}, Cell ${cellReference}`);
-
-
-        // Send the prompt, along with the cell's sheetId and A1 reference, to the worker.
-        // The 'source: spreadsheet' flag helps App.jsx differentiate requests.
-        workerMessenger({
-            type: "generate",
-            data: [{ role: "user", content: actualPrompt }],
-            cellInfo: {
-                sheetId: sheetId,
-                cellReference: cellReference,
-            },
-            source: 'spreadsheet'
-        });
-
-        // Return a message indicating generation is in progress for the cell.
-        // The actual AI response will be written into this cell directly by App.jsx later.
-        return "Generating AI response...";
-    },
-    {
-        description: 'customFunction.SMOLLM.description',
-        locales: {
-            enUS: {
-                customFunction: {
-                    SMOLLM: {
-                        description: 'Sends a prompt to the SmolLM AI model and displays response in cell and chat.',
-                    },
-                },
-            },
-        },
+  'SMOLLM',
+  (prompt) => { // Removed 'context' parameter due to previous error.
+    if (!workerMessenger) {
+      console.error("AI worker messenger is not set!");
+      return "ERROR: AI not ready";
     }
+
+    const actualPrompt = Array.isArray(prompt) ? prompt[0] : prompt;
+
+    // IMPORTANT: Currently, the SMOLLM formula cannot directly update its own cell
+    // because UniverJS does not reliably provide the calling cell's context (row, column, sheet ID)
+    // directly within the custom formula function.
+    // Therefore, the AI response from SMOLLM will appear only in the **chat UI on the left**.
+    workerMessenger({
+      type: "generate",
+      data: [{ role: "user", content: actualPrompt }],
+      source: 'chat', // Explicitly marked as 'chat' source
+    });
+
+    // This message will appear in the cell where SMOLLM is typed.
+    return "Generating AI response in chat...";
+  },
+  {
+    description: 'customFunction.SMOLLM.description',
+    locales: {
+      enUS: {
+        customFunction: {
+          SMOLLM: {
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
+          },
+        },
+      },
+    },
+  }
 );
