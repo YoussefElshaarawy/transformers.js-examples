@@ -23,6 +23,43 @@ export function setWorkerMessenger(messenger) {
 export let globalUniverAPI = null;
 
 /* ------------------------------------------------------------------ */
+/* Helper to convert A1 notation to 0-indexed row/column */
+/* ------------------------------------------------------------------ */
+function fromA1Notation(a1) {
+    let colStr = '';
+    let rowStr = '';
+
+    // Separate column letters from row numbers
+    for (let i = 0; i < a1.length; i++) {
+        const char = a1[i];
+        if (char >= 'A' && char <= 'Z') {
+            colStr += char;
+        } else if (char >= '0' && char <= '9') {
+            rowStr += char;
+        } else {
+            throw new Error(`Invalid character in A1 notation: ${char}`);
+        }
+    }
+
+    if (!colStr || !rowStr) {
+        throw new Error('Invalid A1 notation format. Expected format like "A1" or "B2".');
+    }
+
+    // Convert column string (e.g., "A", "AB") to 0-indexed number
+    let column = 0;
+    for (let i = 0; i < colStr.length; i++) {
+        column = column * 26 + (colStr.charCodeAt(i) - 'A'.charCodeAt(0) + 1);
+    }
+    column--; // Adjust to be 0-indexed (A=0, B=1, ...)
+
+    // Convert row string (e.g., "1", "10") to 0-indexed number
+    const row = parseInt(rowStr, 10) - 1; // Adjust to be 0-indexed (1=0, 2=1, ...)
+
+    return { row, column };
+}
+
+
+/* ------------------------------------------------------------------ */
 /* NEW: Custom UI for manual cell input */
 /* ------------------------------------------------------------------ */
 // WARNING: Adding direct DOM manipulation in univer-init.js is generally
@@ -106,25 +143,29 @@ setCellButton.addEventListener('click', () => {
     }
 
     try {
-        // Attempt to get the active workbook and sheet to set the value
-        const workbook = globalUniverAPI.getSheets().getActiveWorkbook();
-        if (workbook) {
-            const sheet = workbook.getActiveSheet(); // Assumes you're working on the currently active sheet
-            if (sheet) {
-                // UniverJS's getRange method directly supports A1 notation (e.g., "A1", "B5")
-                sheet.getRange(cellAddress).setValue(cellValue);
-                console.log(`Successfully set cell ${cellAddress} to: "${cellValue}"`);
-                // Optionally clear inputs after setting
-                // cellAddressInput.value = '';
-                // cellValueInput.value = '';
-            } else {
-                alert("No active sheet found in the workbook.");
-            }
-        } else {
-            alert("No active workbook found.");
-        }
+        const { row, column } = fromA1Notation(cellAddress);
+
+        // Use the executeCommand approach as suggested
+        globalUniverAPI.executeCommand('sheet.command.set-range-values', {
+            // The value is expected in a specific format for commands
+            value: { v: cellValue }, // 'v' for raw value
+            range: {
+                startRow: row,
+                startColumn: column,
+                endRow: row, // For a single cell, start and end are the same
+                endColumn: column
+            },
+            // Assuming we're targeting the active sheet for simplicity.
+            // If you need to target a specific sheet by ID, you would add:
+            // sheetId: globalUniverAPI.sheets.getActiveWorkbook().getActiveSheet().getSheetId(),
+        });
+
+        console.log(`Successfully set cell <span class="math-inline">\{cellAddress\} to\: "</span>{cellValue}" using command.`);
+        // Optionally clear inputs after setting
+        // cellAddressInput.value = '';
+        // cellValueInput.value = '';
     } catch (e) {
-        console.error("Error setting cell value:", e);
+        console.error("Error setting cell value via command:", e);
         alert(`Failed to set cell ${cellAddress}: ${e.message}`);
     }
 });
@@ -190,26 +231,4 @@ univerAPI.getFormula().registerFunction(
     // IMPORTANT: Currently, the SMOLLM formula cannot directly update its own cell
     // because UniverJS does not reliably provide the calling cell's context (row, column, sheet ID)
     // directly within the custom formula function.
-    // Therefore, the AI response from SMOLLM will appear only in the **chat UI on the left**.
-    workerMessenger({
-      type: "generate",
-      data: [{ role: "user", content: actualPrompt }],
-      source: 'chat', // Explicitly marked as 'chat' source
-    });
-
-    // This message will appear in the cell where SMOLLM is typed.
-    return "Generating AI response in chat...";
-  },
-  {
-    description: 'customFunction.SMOLLM.description',
-    locales: {
-      enUS: {
-        customFunction: {
-          SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
-          },
-        },
-      },
-    },
-  }
-);
+    // Therefore, the AI response from SMOLLM
