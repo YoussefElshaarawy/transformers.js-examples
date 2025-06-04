@@ -3,6 +3,9 @@ import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import "./index.css";
 
+// Import and run the Univer initialization script
+import './univer-init.js'; // <--- ADD THIS LINE
+
 const chatRoot = document.getElementById("chat-root");
 if (!chatRoot) {
   throw new Error("Could not find #chat-root in index.html");
