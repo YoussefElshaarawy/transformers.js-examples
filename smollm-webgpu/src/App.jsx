@@ -34,21 +34,15 @@ function App() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
-  const [numTokens, useStateNumTokens] = useState(null);
+  const [numTokens, setNumTokens] = useState(null);
 
-  // --- NEW: State to track cell updates ---
-  const [cellUpdates, setCellUpdates] = useState({});
-  const currentCellRequest = useRef(null); // To store info for the active cell request
-
-  // Function to set numTokens and potentially trigger cell updates
-  const setNumTokens = (value) => {
-    useStateNumTokens(value);
-    // If there's an active cell request and this is the final token count,
-    // we can assume the final response is being generated.
-    // However, the actual final response comes in the 'complete' message.
-  };
+  // --- NEW: Ref to store information about the active spreadsheet cell request ---
+  // This will hold { row, col, sheetId, accumulatedOutput } when a SMOLLM call is active.
+  const spreadsheetCellTarget = useRef(null);
 
   function onEnter(message) {
+    // When a chat message is entered, clear any active spreadsheet target
+    spreadsheetCellTarget.current = null; 
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
     setIsRunning(true);
@@ -56,8 +50,6 @@ function App() {
   }
 
   function onInterrupt() {
-    // NOTE: We do not set isRunning to false here because the worker
-    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
   }
 
@@ -88,15 +80,18 @@ function App() {
     // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
         if (worker.current) {
-            worker.current.postMessage(message);
-
-            // --- NEW: Store cell info if it's a spreadsheet request ---
-            if (message.cell) {
-                currentCellRequest.current = {
-                    ...message.cell,
-                    output: "" // Initialize output for this cell
+            // If the message from Univer includes cellInfo, it's a spreadsheet request
+            if (message.cellInfo) {
+                // Store the target cell and initialize its output accumulator
+                spreadsheetCellTarget.current = {
+                    ...message.cellInfo, // { row, col, sheetId }
+                    accumulatedOutput: "" // Initialize output for this cell
                 };
+            } else {
+                // If it's a chat message, ensure no spreadsheet request is active
+                spreadsheetCellTarget.current = null;
             }
+            worker.current.postMessage(message);
         } else {
             console.error("AI worker not ready for spreadsheet request.");
         }
@@ -106,7 +101,6 @@ function App() {
     const onMessageReceived = (e) => {
       switch (e.data.status) {
         case "loading":
-          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -116,7 +110,6 @@ function App() {
           break;
 
         case "progress":
-          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
@@ -128,98 +121,84 @@ function App() {
           break;
 
         case "done":
-          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
             prev.filter((item) => item.file !== e.data.file),
           );
           break;
 
         case "ready":
-          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
         case "start":
           {
-            // Start generation
-            // Only update chat UI if it's not a direct cell request.
-            // For cell requests, we'll update the cell directly.
-            if (!currentCellRequest.current) {
-                setMessages((prev) => [
-                    ...prev,
-                    { role: "assistant", content: "" },
-                ]);
-            }
+            // Always add a new assistant message to chat, regardless of source
+            setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: "" },
+            ]);
           }
           break;
 
         case "update":
           {
-            // Generation update: update the output text.
             const { output, tps, numTokens } = e.data;
             setTps(tps);
-            setNumTokens(numTokens); // Calls our new setter
+            setNumTokens(numTokens);
             
-            if (currentCellRequest.current) {
-                // If it's a cell request, append output to the cell's content
-                currentCellRequest.current.output += output;
-                // You might choose to update the cell live here, or wait for 'complete'
-                // For simplicity, we'll wait for 'complete' for the final update.
-            } else {
-                // Otherwise, update chat UI
-                setMessages((prev) => {
-                    const cloned = [...prev];
-                    const last = cloned.at(-1);
-                    cloned[cloned.length - 1] = {
-                        ...last,
-                        content: last.content + output,
-                    };
-                    return cloned;
-                });
+            // Always update chat UI (this is the blueprint behavior)
+            setMessages((prev) => {
+                const cloned = [...prev];
+                const last = cloned.at(-1);
+                cloned[cloned.length - 1] = {
+                    ...last,
+                    content: last.content + output,
+                };
+                return cloned;
+            });
+
+            // --- NEW: If a spreadsheet request is active, accumulate output for the cell ---
+            if (spreadsheetCellTarget.current) {
+                spreadsheetCellTarget.current.accumulatedOutput += output;
             }
           }
           break;
 
         case "complete":
-          // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
 
-          if (currentCellRequest.current) {
-              // --- NEW: Update the spreadsheet cell with the final AI response ---
-              const { row, col, sheetId, output } = currentCellRequest.current;
+          // --- NEW: If a spreadsheet request was active, update the cell with the final response ---
+          if (spreadsheetCellTarget.current) {
+              const { row, col, sheetId, accumulatedOutput } = spreadsheetCellTarget.current;
               
               if (globalUniverAPI) {
                   const workbook = globalUniverAPI.getUniver().getCurrentWorkbook();
                   const worksheet = workbook.getSheetBySheetId(sheetId);
                   
                   if (worksheet) {
-                      // Update the cell value
-                      worksheet.getCell(row, col).setValue(output);
-                      
-                      // This forces Univer to re-render the cell
-                      // You might need to trigger a re-calculation if formulas depend on this
-                      // For simple text, setValue often updates the display.
-                      // If not, you might need worksheet.setRangeValues or similar method
-                      // that triggers a render or a re-calculate if the cell is part of other formulas.
-                      // The following line should trigger a formula re-calculation:
+                      // Update the cell value with the accumulated AI response
+                      worksheet.getCell(row, col).setValue(accumulatedOutput);
+                      // Trigger a recalculation to ensure display updates and formulas dependent on it
+                      // This is crucial for Univer to render the new value.
                       globalUniverAPI.getUniver().getUniverPlugin('formula').getFormulaEngine()._calculate();
                       
-                      console.log(`Cell (${row}, ${col}) updated with AI response: ${output}`);
+                      console.log(`Cell (${row}, ${col}) updated with AI response: ${accumulatedOutput}`);
                   } else {
                       console.error(`Worksheet with ID ${sheetId} not found.`);
                   }
               } else {
                   console.error("globalUniverAPI is not available to update cell.");
               }
-              currentCellRequest.current = null; // Clear the active request
+              // Clear the active spreadsheet request after completion
+              spreadsheetCellTarget.current = null;
           }
           break;
 
         case "error":
           setError(e.data.data);
           // --- NEW: If an error occurs during cell generation, update the cell with the error ---
-          if (currentCellRequest.current) {
-              const { row, col, sheetId } = currentCellRequest.current;
+          if (spreadsheetCellTarget.current) {
+              const { row, col, sheetId } = spreadsheetCellTarget.current;
               if (globalUniverAPI) {
                   const workbook = globalUniverAPI.getUniver().getCurrentWorkbook();
                   const worksheet = workbook.getSheetBySheetId(sheetId);
@@ -228,7 +207,7 @@ function App() {
                       globalUniverAPI.getUniver().getUniverPlugin('formula').getFormulaEngine()._calculate();
                   }
               }
-              currentCellRequest.current = null; // Clear the active request
+              spreadsheetCellTarget.current = null; // Clear the active request
           }
           break;
       }
@@ -250,10 +229,10 @@ function App() {
   }, []);
 
   // Send the messages to the worker thread whenever the `messages` state changes.
-  // This useEffect primarily handles chat-based generation.
-  // Cell-based generation is now triggered directly by setWorkerMessenger in univer-init.js.
+  // This useEffect now ONLY handles chat-based generation.
+  // Cell-based generation is triggered directly by setWorkerMessenger in univer-init.js.
   useEffect(() => {
-    // Only proceed if a user message was just added and it's not a cell-initiated request
+    // Only proceed if a user message was just added and it's NOT a spreadsheet-initiated request
     if (messages.filter((x) => x.role === "user").length === 0) {
       return;
     }
@@ -261,8 +240,9 @@ function App() {
       return;
     }
 
-    // Check if this is a chat-initiated request (i.e., not a cell request being processed)
-    if (!currentCellRequest.current) {
+    // Only send to worker if no spreadsheet request is currently active
+    // This prevents the chat useEffect from re-sending a prompt that originated from SMOLLM
+    if (!spreadsheetCellTarget.current) {
       setTps(null);
       worker.current.postMessage({ type: "generate", data: messages });
     }
