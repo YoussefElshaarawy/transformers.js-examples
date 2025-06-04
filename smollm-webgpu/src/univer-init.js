@@ -19,7 +19,7 @@ export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- NEW: Export globalUniverAPI so it can be used in App.jsx for cell updates ---
+// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
 /* ------------------------------------------------------------------ */
@@ -33,7 +33,7 @@ const { univerAPI } = createUniver({
 });
 
 // --- NEW: Assign univerAPI to the global export ---
-globalUniverAPI = univerAPI; // This makes univerAPI accessible to App.jsx
+globalUniverAPI = univerAPI;
 
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
@@ -90,25 +90,20 @@ univerAPI.getFormula().registerFunction(
       return "ERROR: AI not ready";
     }
 
-    // Get the current cell's location from the context
-    // The context object provided by Univer's custom function API
-    // should contain the source cell's row and column.
+    // Get the current cell's location from the context provided by Univer
     const row = context.row;
     const col = context.col;
-    const sheetId = context.sheetId; // Also get the sheet ID
+    const sheetId = context.sheetId; 
 
     // Send the prompt to the worker, including the cell's coordinates.
-    // We are deliberately formatting this to look like a chat message
-    // because the worker.js cannot be modified to handle a new type.
-    // We add a 'cell' field to indicate this is a spreadsheet request.
+    // The 'cellInfo' field is new and will be used by App.jsx.
     workerMessenger({
-      type: "generate",
-      data: [{ role: "user", content: prompt }], // Worker expects an array of messages
-      cell: { row, col, sheetId } // Pass cell info to App.jsx via workerMessenger
+      type: "generate", // Still use 'generate' type for worker.js compatibility
+      data: [{ role: "user", content: prompt }], // Worker still expects this format
+      cellInfo: { row, col, sheetId } // Pass cell info for App.jsx to use
     });
 
-    // Return a message indicating generation is in progress.
-    // App.jsx will update this cell with the actual AI response later.
+    // Return a temporary message. The actual AI response will update this cell later.
     return "Generating...";
   },
   {
@@ -117,7 +112,7 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat AND cell.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat and cell.',
           },
         },
       },
