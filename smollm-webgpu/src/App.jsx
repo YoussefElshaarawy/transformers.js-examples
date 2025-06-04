@@ -5,6 +5,9 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
+// --- NEW: Import setWorkerMessenger from univer-init.js ---
+import { setWorkerMessenger } from './univer-init.js';
+
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
 const EXAMPLES = [
@@ -68,6 +71,16 @@ function App() {
       });
       worker.current.postMessage({ type: "check" }); // Do a feature check
     }
+
+    // --- NEW: Provide the worker messenger to univer-init.js ---
+    // This allows the SMOLLM function in the sheet to send messages to the worker.
+    setWorkerMessenger((message) => {
+        if (worker.current) {
+            worker.current.postMessage(message);
+        } else {
+            console.error("AI worker not ready for spreadsheet request.");
+        }
+    });
 
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
@@ -306,16 +319,14 @@ function App() {
                     {(numTokens / tps).toFixed(2)} seconds&nbsp;&#40;
                   </span>
                 )}
-                {
-                  <>
-                    <span className="font-medium text-center mr-1 text-black dark:text-white">
-                      {tps.toFixed(2)}
-                    </span>
-                    <span className="text-gray-500 dark:text-gray-300">
-                      tokens/second
-                    </span>
-                  </>
-                }
+                <>
+                  <span className="font-medium text-center mr-1 text-black dark:text-white">
+                    {tps.toFixed(2)}
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-300">
+                    tokens/second
+                  </span>
+                </>
                 {!isRunning && (
                   <>
                     <span className="mr-1">&#41;.</span>
