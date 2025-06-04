@@ -160,7 +160,7 @@ setCellButton.addEventListener('click', () => {
             // sheetId: globalUniverAPI.sheets.getActiveWorkbook().getActiveSheet().getSheetId(),
         });
 
-        console.log(`Successfully set cell <span class="math-inline">\{cellAddress\} to\: "</span>{cellValue}" using command.`);
+        console.log(`Successfully set cell ${cellAddress} to: "${cellValue}" using command.`);
         // Optionally clear inputs after setting
         // cellAddressInput.value = '';
         // cellValueInput.value = '';
@@ -231,4 +231,26 @@ univerAPI.getFormula().registerFunction(
     // IMPORTANT: Currently, the SMOLLM formula cannot directly update its own cell
     // because UniverJS does not reliably provide the calling cell's context (row, column, sheet ID)
     // directly within the custom formula function.
-    // Therefore, the AI response from SMOLLM
+    // Therefore, the AI response from SMOLLM will appear only in the **chat UI on the left**.
+    workerMessenger({
+      type: "generate",
+      data: [{ role: "user", content: actualPrompt }],
+      source: 'chat', // Explicitly marked as 'chat' source
+    });
+
+    // This message will appear in the cell where SMOLLM is typed.
+    return "Generating AI response in chat...";
+  },
+  {
+    description: 'customFunction.SMOLLM.description',
+    locales: {
+      enUS: {
+        customFunction: {
+          SMOLLM: {
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
+          },
+        },
+      },
+    },
+  }
+);
