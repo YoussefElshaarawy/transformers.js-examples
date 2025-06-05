@@ -22,9 +22,6 @@ export function setWorkerMessenger(messenger) {
 // --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
-// --- NEW: Keep a queue of "promised cells" waiting for an AI reply ---
-export const pendingCellQueue = [];
-
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
@@ -87,38 +84,56 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  (prompt, row, col) => { // Added row and col arguments
+  // Assuming the second parameter is a context object provided by UniverJS
+  // containing the cell's row, column, and sheetId.
+  // Adjust 'callerContext.row', 'callerContext.column', 'callerContext.sheetId'
+  // based on the actual UniverJS API if different.
+  async (prompt, callerContext) => {
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
       return "ERROR: AI not ready";
     }
 
-    // Remember where to put the answer
-    pendingCellQueue.push({
-      sheetId: univerAPI.getActiveWorkbook().getActiveSheet().getSheetId(),
-      row: Number(row),          // from ROW()
-      col: Number(col),          // from COLUMN()
-    });
+    let originatingCell = null;
+    // Attempt to extract cell information from the context provided by UniverJS.
+    // This is a common pattern for custom spreadsheet functions.
+    if (callerContext && typeof callerContext === 'object') {
+        // These property names (row, column, sheetId) are common in such contexts.
+        // UniverJS usually uses 0-indexed rows/columns for internal APIs.
+        originatingCell = {
+            sheetId: callerContext.sheetId || univerAPI.getActiveWorkbook().getActiveSheet().getSheetId(), // Fallback if sheetId isn't directly in callerContext
+            row: callerContext.row,
+            col: callerContext.column
+        };
+    }
 
-    // Send the prompt to the worker.
-    // We are deliberately formatting this to look like a chat message
-    // because the worker.js cannot be modified to handle a new type.
+    if (!originatingCell || typeof originatingCell.row === 'undefined' || typeof originatingCell.col === 'undefined') {
+        console.error("Could not determine originating cell for SMOLLM formula. Caller context:", callerContext);
+        return "ERROR: Cell context missing";
+    }
+
+    // Send the prompt AND the originating cell info to the worker.
     workerMessenger({
       type: "generate",
-      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
+      data: {
+        messages: [{ role: "user", content: prompt }], // Worker expects an array of messages
+        originatingCell: originatingCell // NEW: Pass the originating cell info
+      }
     });
 
-    // Return a message indicating generation is in progress.
-    // The actual AI response will appear in the chat UI.
-    return "⌛ generating…"; // Temporary placeholder shown in-cell
+    // Return an immediate message indicating generation is in progress.
+    // The actual AI response will update this cell directly later via App.jsx.
+    return "Generating AI response...";
   },
   {
     description: 'customFunction.SMOLLM.description',
+    // You might need to add a flag like `needsCellInfo: true` here if UniverJS requires it
+    // to pass the cell context to the custom function.
     locales: {
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat and cell.',
+            description: 'Sends a prompt to the SmolLM AI model and updates the calling cell with the response.',
           },
         },
       },
