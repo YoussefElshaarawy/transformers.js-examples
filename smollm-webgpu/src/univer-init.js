@@ -22,23 +22,8 @@ export function setWorkerMessenger(messenger) {
 // --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
-// --- NEW: Global flag to indicate if an SMOLLM request is pending ---
-// This flag will be managed by App.jsx
-export let isSmollmPending = false;
-export function setSmollmPending(status) {
-  isSmollmPending = status;
-}
-
-// --- NEW: Global variable to store the single pending request's target cell ---
-// This will be set by SMOLLM and cleared by App.jsx
-let currentSmollmTargetCell = null;
-export function setCurrentSmollmTargetCell(cell) {
-  currentSmollmTargetCell = cell;
-}
-export function getCurrentSmollmTargetCell() {
-  return currentSmollmTargetCell;
-}
-
+// --- NEW: Keep a queue of "promised cells" waiting for an AI reply ---
+export const pendingCellQueue = [];
 
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
@@ -52,7 +37,6 @@ const { univerAPI } = createUniver({
 
 // --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
-
 
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
@@ -103,53 +87,30 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  (prompt) => {
+  (prompt, row, col) => { // Added row and col arguments
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
       return "ERROR: AI not ready";
     }
 
-    // --- NEW: Block if another SMOLLM request is already pending ---
-    if (isSmollmPending) {
-      return "AI BUSY: Please wait for previous SMOLLM() to complete.";
-    }
-
-    const actualPrompt = Array.isArray(prompt) ? prompt[0] : prompt;
-
-    let targetCell = null;
-    const formulaEngine = univerAPI.getFormula();
-    const context = formulaEngine.getCurrentContext();
-
-    if (context && globalUniverAPI) {
-      const { row, column } = context;
-      const workbook = globalUniverAPI.sheets.getActiveWorkbook();
-      const sheet = workbook.getActiveSheet();
-
-      targetCell = {
-        row: row,
-        column: column,
-        sheetId: sheet.getSheetId(),
-        workbookId: workbook.getUnitId(),
-      };
-      // console.log("SMOLLM called from (reliable context):", targetCell);
-    } else {
-      console.warn("SMOLLM: Could not get full formula context or UniverAPI. AI response will only go to chat.");
-      return "ERROR: Could not get cell context.";
-    }
-
-    // --- NEW: Set the pending flag and store the target cell ---
-    setSmollmPending(true);
-    setCurrentSmollmTargetCell(targetCell);
-
-    workerMessenger({
-      type: "generate",
-      data: [{ role: "user", content: actualPrompt }],
-      // targetCell is sent here but Worker will NOT send it back
-      source: 'formula',
+    // Remember where to put the answer
+    pendingCellQueue.push({
+      sheetId: univerAPI.getActiveWorkbook().getActiveSheet().getSheetId(),
+      row: Number(row),          // from ROW()
+      col: Number(col),          // from COLUMN()
     });
 
-    // Return a placeholder message immediately
-    return "Generating AI response...";
+    // Send the prompt to the worker.
+    // We are deliberately formatting this to look like a chat message
+    // because the worker.js cannot be modified to handle a new type.
+    workerMessenger({
+      type: "generate",
+      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
+    });
+
+    // Return a message indicating generation is in progress.
+    // The actual AI response will appear in the chat UI.
+    return "⌛ generating…"; // Temporary placeholder shown in-cell
   },
   {
     description: 'customFunction.SMOLLM.description',
@@ -157,7 +118,7 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in its cell.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat and cell.',
           },
         },
       },
