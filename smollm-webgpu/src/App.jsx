@@ -63,6 +63,7 @@ function App() {
   }
 
   // We use the useEffect hook to setup the worker as soon as the App component is mounted.
+  // IMPORTANT: Add 'messages' to the dependency array to ensure onMessageReceived accesses the latest state!
   useEffect(() => {
     // Create the worker if it does not yet exist.
     if (!worker.current) {
@@ -153,6 +154,7 @@ function App() {
           setIsRunning(false);
 
           // Grab the text we just finished streaming
+          // This 'messages' will now be up-to-date due to the dependency array
           const aiText = messages.at(-1)?.content || '';
 
           // Pop the first waiting cell, if any
@@ -192,7 +194,7 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, [messages]); // messages as dependency to allow access to the latest aiText
+  }, [messages]); // <<<--- THIS IS THE CRUCIAL CHANGE: add 'messages' here
 
   // Send the messages to the worker thread whenever the messages state changes.
   useEffect(() => {
@@ -200,13 +202,9 @@ function App() {
       // No user messages yet: do nothing.
       return;
     }
-    if (messages.at(-1).role === "assistant" && !isRunning) { // Only send if the last message is NOT from assistant or if still running (for initial generation)
-      // Do not update if the last message is from the assistant unless it's an ongoing generation
-      return;
-    }
-    setTps(null);
-    // Only send if the last message was from a user
-    if (messages.at(-1)?.role === "user") {
+    // Only send if the last message is from the user and we are not currently running a generation.
+    if (messages.at(-1)?.role === "user" && !isRunning) {
+        setTps(null); // Reset TPS for a new generation
         worker.current.postMessage({ type: "generate", data: messages });
     }
   }, [messages, isRunning]);
