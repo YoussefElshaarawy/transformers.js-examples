@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger and globalUniverAPI, pendingCellQueue from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI, pendingCellQueue } from './univer-init.js';
+// --- NEW: Import setWorkerMessenger and globalUniverAPI from univer-init.js ---
+import { setWorkerMessenger, globalUniverAPI } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -41,6 +41,9 @@ function App() {
     setTps(null);
     setIsRunning(true);
     setInput("");
+    // NOTE: For chat-based input, we don't have an originating cell here
+    // The worker will simply generate and update the chat UI.
+    // The spreadsheet integration happens only when the SMOLLM formula is called.
   }
 
   function onInterrupt() {
@@ -63,7 +66,6 @@ function App() {
   }
 
   // We use the useEffect hook to setup the worker as soon as the App component is mounted.
-  // IMPORTANT: Add 'messages' to the dependency array to ensure onMessageReceived accesses the latest state!
   useEffect(() => {
     // Create the worker if it does not yet exist.
     if (!worker.current) {
@@ -122,7 +124,7 @@ function App() {
 
         case "start":
           {
-            // Start generation
+            // Start generation (for chat UI)
             setMessages((prev) => [
               ...prev,
               { role: "assistant", content: "" },
@@ -132,48 +134,55 @@ function App() {
 
         case "update":
           {
-            // Generation update: update the output text.
-            // Parse messages
+            // Generation update: update the output text in the chat UI.
             const { output, tps, numTokens } = e.data;
             setTps(tps);
             setNumTokens(numTokens);
             setMessages((prev) => {
               const cloned = [...prev];
               const last = cloned.at(-1);
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: last.content + output,
-              };
+              // Ensure the last message is from assistant before updating its content
+              if (last && last.role === "assistant") {
+                cloned[cloned.length - 1] = {
+                  ...last,
+                  content: last.content + output,
+                };
+              } else {
+                 // Fallback if last message isn't assistant (shouldn't happen with correct flow)
+                 cloned.push({ role: "assistant", content: output });
+              }
               return cloned;
             });
           }
           break;
 
-        case "complete": { // Added block for 'complete' case
+        case "complete":
           // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
+          // --- NEW: Handle final output for spreadsheet ---
+          const { finalOutput, originatingCell } = e.data;
+          if (finalOutput && originatingCell && globalUniverAPI) {
+            try {
+              const { sheetId, row, col } = originatingCell;
+              const univerInstance = globalUniverAPI.getUniver();
+              // Get the active workbook and then the specific sheet by ID
+              const worksheet = univerInstance.getCurrentUniverSheet().getSheetBySheetId(sheetId);
 
-          // Grab the text we just finished streaming
-          // This 'messages' will now be up-to-date due to the dependency array
-          const aiText = messages.at(-1)?.content || '';
-
-          // Pop the first waiting cell, if any
-          if (pendingCellQueue.length && aiText && globalUniverAPI) { // Check for globalUniverAPI
-            const { sheetId, row, col } = pendingCellQueue.shift();
-            const wb   = globalUniverAPI.getActiveWorkbook();
-            const sheet =
-              wb.getSheetById?.(sheetId) ?? wb.getActiveSheet();
-
-            // Univer rows/cols are 0-based
-            // Ensure sheet exists before trying to set value
-            if (sheet) {
-                sheet.getRangeByIndex(row - 1, col - 1).setValue(aiText);
-            } else {
-                console.warn(`Sheet with ID ${sheetId} not found for cell update.`);
+              if (worksheet) {
+                // UniverJS ranges are usually 0-indexed internally for getRangeByOffset
+                // Ensure row and col are 0-indexed if not already.
+                const range = worksheet.getRangeByOffset(row, col, row, col); // Target single cell
+                range.setValue(finalOutput);
+                console.log(`LLM output placed in cell: Sheet ${sheetId}, Row ${row}, Col ${col}`);
+              } else {
+                console.error("Sheet not found for ID:", sheetId);
+              }
+            } catch (error) {
+              console.error("Error updating spreadsheet cell:", error);
+              // You might want to display an error message to the user here
             }
           }
           break;
-        }
 
         case "error":
           setError(e.data.data);
@@ -194,19 +203,22 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, [messages]); // <<<--- THIS IS THE CRUCIAL CHANGE: add 'messages' here
+  }, []);
 
   // Send the messages to the worker thread whenever the messages state changes.
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet: do nothing.
+      // No user messages yet from chat UI: do nothing.
       return;
     }
-    // Only send if the last message is from the user and we are not currently running a generation.
-    if (messages.at(-1)?.role === "user" && !isRunning) {
-        setTps(null); // Reset TPS for a new generation
-        worker.current.postMessage({ type: "generate", data: messages });
+    if (messages.at(-1).role === "assistant") {
+      // Do not update if the last message is from the assistant (means generation is ongoing)
+      return;
     }
+    setTps(null);
+    // When sending from the chat UI, there's no originatingCell for the spreadsheet.
+    // The worker will still process it for chat display.
+    worker.current.postMessage({ type: "generate", data: { messages: messages } });
   }, [messages, isRunning]);
 
 
