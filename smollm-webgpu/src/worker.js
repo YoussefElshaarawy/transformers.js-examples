@@ -8,14 +8,14 @@ import {
 /**
  * Helper function to perform feature detection for WebGPU
  */
-// let fp16_supported = false;
+// let fp16_supported = false; // This line is commented out in your original code, keeping it that way.
 async function check() {
   try {
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) {
       throw new Error("WebGPU is not supported (no adapter found)");
     }
-    // fp16_supported = adapter.features.has("shader-f16")
+    // fp16_supported = adapter.features.has("shader-f16") // This line is commented out in your original code, keeping it that way.
   } catch (e) {
     self.postMessage({
       status: "error",
@@ -48,7 +48,12 @@ class TextGenerationPipeline {
 const stopping_criteria = new InterruptableStoppingCriteria();
 
 let past_key_values_cache = null;
-async function generate(messages) {
+
+// --- MODIFIED: 'generate' now accepts a 'payload' object ---
+async function generate(payload) {
+  // Destructure the payload to get both messages and the originating cell info
+  const { messages, originatingCell } = payload;
+
   // Retrieve the text-generation pipeline.
   const [tokenizer, model] = await TextGenerationPipeline.getInstance();
 
@@ -68,6 +73,7 @@ async function generate(messages) {
     }
   };
   const callback_function = (output) => {
+    // This callback is for streaming updates to the chat UI
     self.postMessage({
       status: "update",
       output,
@@ -106,10 +112,14 @@ async function generate(messages) {
     skip_special_tokens: true,
   });
 
-  // Send the output back to the main thread
+  const finalGeneratedText = decoded[0] || ""; // Get the first (and likely only) complete response
+
+  // --- MODIFIED: Send the final output AND the originating cell info back to the main thread ---
   self.postMessage({
     status: "complete",
-    output: decoded,
+    output: "", // Clear the streaming output as the generation is complete
+    finalOutput: finalGeneratedText, // Dedicated field for the final complete output
+    originatingCell: originatingCell, // Pass back the originating cell's info
   });
 }
 
@@ -136,6 +146,7 @@ async function load() {
   await model.generate({ ...inputs, max_new_tokens: 1 });
   self.postMessage({ status: "ready" });
 }
+
 // Listen for messages from the main thread
 self.addEventListener("message", async (e) => {
   const { type, data } = e.data;
@@ -149,9 +160,10 @@ self.addEventListener("message", async (e) => {
       load();
       break;
 
+    // --- MODIFIED: Pass the entire 'data' payload to 'generate' ---
     case "generate":
       stopping_criteria.reset();
-      generate(data);
+      generate(data); // 'data' now contains both 'messages' and 'originatingCell'
       break;
 
     case "interrupt":
