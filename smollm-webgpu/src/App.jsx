@@ -1,4 +1,4 @@
-// App.jsx (Updated)
+// App.jsx
 
 import { useEffect, useState, useRef } from "react";
 
@@ -7,8 +7,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- Import setWorkerMessenger and globalUniverAPI, and smollmRequestMap from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI, smollmRequestMap } from './univer-init.js'; // Added smollmRequestMap
+// --- NEW: Import setWorkerMessenger, globalUniverAPI, and smollmRequestMap from univer-init.js ---
+import { setWorkerMessenger, globalUniverAPI, smollmRequestMap } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -37,6 +37,9 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
+
+  // --- NEW: Ref to accumulate output for spreadsheet cells ---
+  const smollmCellOutputAccumulator = useRef(new Map());
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -88,7 +91,6 @@ function App() {
     const onMessageReceived = (e) => {
       switch (e.data.status) {
         case "loading":
-          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -98,7 +100,6 @@ function App() {
           break;
 
         case "progress":
-          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
@@ -110,22 +111,23 @@ function App() {
           break;
 
         case "done":
-          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
             prev.filter((item) => item.file !== e.data.file),
           );
           break;
 
         case "ready":
-          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
         case "start":
           {
-            // Start generation
-            // Only add assistant message to chat if it's not a SMOLLM update
-            if (!e.data.smollmRequestId) {
+            // If it's a SMOLLM request, initialize the accumulator.
+            // Do NOT add to chat if it's a SMOLLM request, as it's displayed in the cell.
+            if (e.data.smollmRequestId) {
+                smollmCellOutputAccumulator.current.set(e.data.smollmRequestId, '');
+            } else {
+                // Existing chat logic for regular chat inputs
                 setMessages((prev) => [
                     ...prev,
                     { role: "assistant", content: "" },
@@ -136,11 +138,9 @@ function App() {
 
         case "update":
           {
-            // Generation update: update the output text.
             const { output, tps, numTokens, smollmRequestId } = e.data;
 
-            // --- Handle chat update ---
-            // If it's a regular chat message (no smollmRequestId), update the chat UI
+            // --- Handle chat update for regular messages ---
             if (!smollmRequestId) {
                 setTps(tps);
                 setNumTokens(numTokens);
@@ -154,18 +154,23 @@ function App() {
                     return cloned;
                 });
             } else {
-                // If it's a SMOLLM request, update the cell directly
+                // --- NEW: Handle SMOLLM cell update for streaming ---
                 if (globalUniverAPI && smollmRequestMap.has(smollmRequestId)) {
                     const { row, col, sheetId } = smollmRequestMap.get(smollmRequestId);
-                    // Append output to the cell content. This will show streaming.
-                    globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[output]]);
+
+                    // Accumulate the output chunk
+                    let currentAccumulated = smollmCellOutputAccumulator.current.get(smollmRequestId) || '';
+                    currentAccumulated += output;
+                    smollmCellOutputAccumulator.current.set(smollmRequestId, currentAccumulated);
+
+                    // Update the cell in Univer
+                    globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[currentAccumulated]]);
                 }
             }
           }
           break;
 
         case "complete":
-          // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
 
           // --- Handle SMOLLM completion and cleanup ---
@@ -176,8 +181,11 @@ function App() {
                   // Ensure the final, complete output is set to the cell
                   globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[finalOutput]]);
               }
-              smollmRequestMap.delete(completedSmollmId); // Clean up the map
+              smollmRequestMap.delete(completedSmollmId); // Clean up the map from univer-init.js
+              smollmCellOutputAccumulator.current.delete(completedSmollmId); // Clean up the accumulator
           }
+          // The general `setTps(tps)` and `setNumTokens(numTokens)` from `complete` can stay,
+          // but the message update only applies to regular chat.
           break;
 
         case "error":
@@ -190,6 +198,7 @@ function App() {
                   globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[`ERROR: ${e.data.data}`]]);
               }
               smollmRequestMap.delete(errorSmollmId); // Clean up
+              smollmCellOutputAccumulator.current.delete(errorSmollmId); // Clean up
           }
           break;
       }
@@ -199,34 +208,31 @@ function App() {
       console.error("Worker error:", e);
     };
 
-    // Attach the callback function as an event listener.
     worker.current.addEventListener("message", onMessageReceived);
     worker.current.addEventListener("error", onErrorReceived);
 
-    // Define a cleanup function for when the component is unmounted.
     return () => {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
   }, []);
 
-  // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
     // This useEffect is primarily for chat-initiated messages.
-    // We only trigger it if the last message was a user message and not from a SMOLLM call.
-    // The SMOLLM calls are handled directly via setWorkerMessenger.
+    // It should NOT trigger for SMOLLM requests.
     if (messages.filter((x) => x.role === "user").length === 0) {
-        return;
+      return;
     }
     const lastMessage = messages.at(-1);
-    if (lastMessage.role === "assistant" || lastMessage.isSmollmGenerated) { // `isSmollmGenerated` is a conceptual flag if you wanted to mark spreadsheet-initiated messages
+    // Only process if the last message is a user message and not from a SMOLLM call.
+    // We assume chat messages added via onEnter don't have smollmRequestId
+    if (lastMessage.role === "assistant" || lastMessage.smollmRequestId) {
         return;
     }
 
     setTps(null);
     worker.current.postMessage({ type: "generate", data: messages });
   }, [messages, isRunning]);
-
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
