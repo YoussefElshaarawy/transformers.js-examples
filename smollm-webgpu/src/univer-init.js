@@ -1,4 +1,4 @@
-// univer-init.js (Updated)
+// univer-init.js
 
 import {
   createUniver,
@@ -13,19 +13,19 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
-// --- Export a variable to hold the worker messenger function ---
+// --- NEW: Export a variable to hold the worker messenger function ---
 export let workerMessenger = null;
 
-// --- Export a function to set the worker messenger ---
+// --- NEW: Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
+// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
 // --- NEW: Map to store the cell location for each SMOLLM request ---
-const smollmRequestMap = new Map();
+export const smollmRequestMap = new Map(); // Made exportable for App.jsx
 
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
@@ -37,7 +37,7 @@ const { univerAPI } = createUniver({
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
-// --- Assign univerAPI to the global export ---
+// --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
 
 /* ------------------------------------------------------------------ */
@@ -113,7 +113,7 @@ univerAPI.getFormula().registerFunction(
     });
 
     // Return a message indicating generation is in progress.
-    // The actual AI response will update the cell later.
+    // This will immediately put "Generating AI response..." in the cell.
     return "Generating AI response...";
   },
   {
@@ -129,6 +129,3 @@ univerAPI.getFormula().registerFunction(
     },
   }
 );
-
-// --- NEW: Export the map for App.jsx to access cell locations ---
-export { smollmRequestMap };
