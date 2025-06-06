@@ -48,9 +48,9 @@ class TextGenerationPipeline {
 const stopping_criteria = new InterruptableStoppingCriteria();
 
 let past_key_values_cache = null;
-let currentRequestId = null; // NEW: Global variable to store the request ID for cell updates
+let currentRequestId = null; // Global variable to store the request ID for cell updates
 
-async function generate(messages, requestId = null) { // NEW: Accept requestId
+async function generate(messages, requestId = null) { // Accept requestId
   currentRequestId = requestId; // Store the current request ID
 
   // Retrieve the text-generation pipeline.
@@ -80,7 +80,7 @@ async function generate(messages, requestId = null) { // NEW: Accept requestId
       output,
       tps,
       numTokens,
-      requestId: currentRequestId, // NEW: Include requestId
+      requestId: currentRequestId, // Include requestId
     });
   };
 
@@ -92,7 +92,7 @@ async function generate(messages, requestId = null) { // NEW: Accept requestId
   });
 
   // Tell the main thread we are starting generation
-  self.postMessage({ status: "start", requestId: currentRequestId }); // NEW: Include requestId
+  self.postMessage({ status: "start", requestId: currentRequestId });
 
   try {
     const { past_key_values, sequences } = await model.generate({
@@ -121,7 +121,7 @@ async function generate(messages, requestId = null) { // NEW: Accept requestId
       output: decoded[0], // Send the complete, decoded string from the generated sequence
       tps, // Include tps and numTokens for complete message
       numTokens,
-      requestId: currentRequestId, // NEW: Include requestId
+      requestId: currentRequestId, // Include requestId
     });
 
   } catch (error) {
@@ -129,7 +129,7 @@ async function generate(messages, requestId = null) { // NEW: Accept requestId
     self.postMessage({
       status: "error",
       data: error.message,
-      requestId: currentRequestId, // NEW: Include requestId in error
+      requestId: currentRequestId, // Include requestId in error
     });
   } finally {
     currentRequestId = null; // Reset requestId after completion or error to prevent cross-contamination
@@ -162,7 +162,7 @@ async function load() {
 
 // Listen for messages from the main thread
 self.addEventListener("message", async (e) => {
-  const { type, data, requestId } = e.data; // NEW: Destructure requestId from event data
+  const { type, data, requestId } = e.data; // Destructure requestId from event data
 
   switch (type) {
     case "check":
@@ -178,7 +178,7 @@ self.addEventListener("message", async (e) => {
       generate(data); // Call generate without a requestId (for chat)
       break;
 
-    case "generate-for-cell": // NEW: Handle requests specifically for cell output
+    case "generate-for-cell": // Handle requests specifically for cell output
       stopping_criteria.reset();
       generate(data, requestId); // Call generate and pass the requestId
       break;
