@@ -1,3 +1,5 @@
+// App.jsx
+
 import { useEffect, useState, useRef } from "react";
 
 import Chat from "./components/Chat";
@@ -5,8 +7,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger, globalUniverAPI, and cellPromises from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI, cellPromises } from './univer-init.js';
+// --- UPDATED: Import setWorkerMessenger AND setSmollmCompletionCallback ---
+import { setWorkerMessenger, setSmollmCompletionCallback } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -35,6 +37,11 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
+
+  // --- NEW: Map to store ongoing SMOLLM responses to accumulate output for the cell ---
+  // We use useRef because this map doesn't trigger re-renders itself,
+  // and we need a mutable object that persists across renders.
+  const smollmPendingOutputs = useRef(new Map());
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -72,8 +79,8 @@ function App() {
       worker.current.postMessage({ type: "check" }); // Do a feature check
     }
 
-    // Provide the worker messenger to univer-init.js.
-    // This allows the SMOLLM function in the spreadsheet to send messages to the worker.
+    // --- UPDATED: Provide the worker messenger to univer-init.js ---
+    // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
         if (worker.current) {
             worker.current.postMessage(message);
@@ -82,26 +89,26 @@ function App() {
         }
     });
 
+    // --- NEW: Provide the SMOLLM completion callback to univer-init.js ---
+    // This function will be called by App.jsx when an SMOLLM generation is complete
+    // It's used by univer-init.js to resolve the promise for the cell.
+    setSmollmCompletionCallback((requestId, finalOutput) => {
+        // The actual logic for resolving the promise and updating the cell is in univer-init.js.
+        // We simply provide this bridge function to univer-init.js.
+        // There's no direct action needed here in App.jsx for the cell itself.
+    });
+
+
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
-      const { status, output, tps, numTokens, data, requestId } = e.data; // Destructure all common properties
+      // --- NEW: Extract smollmRequestId if present in the worker message ---
+      const smollmRequestId = e.data.smollmRequestId;
 
-      // Determine if this message is specifically for a cell request.
-      // If requestId is null/undefined, or if it's not found in cellPromises, it's for chat.
-      const isForCell = requestId && cellPromises.has(requestId);
-      let promiseData = null;
-      if (isForCell) {
-          promiseData = cellPromises.get(requestId);
-      }
-
-      console.log(`[App.jsx] Received message: status=${status}, requestId=${requestId}, isForCell=${isForCell}`);
-
-
-      switch (status) {
+      switch (e.data.status) {
         case "loading":
           // Model file start load: add a new progress item to the list.
           setStatus("loading");
-          setLoadingMessage(data); // Using 'data' from destructuring
+          setLoadingMessage(e.data.data);
           break;
 
         case "initiate":
@@ -134,70 +141,92 @@ function App() {
 
         case "start":
           {
-            if (isForCell) {
-              // Cell handling: The cell's promise is already established. No direct App.jsx UI update.
-              // Univer.js will display "Loading..." or similar via the Promise.
-            } else {
-              // Chat handling
-              setMessages((prev) => [
-                ...prev,
-                { role: "assistant", content: "" },
-              ]);
+            // Start generation
+            // If it's a regular chat generation (no smollmRequestId), add a new assistant message to chat
+            if (!smollmRequestId) {
+                setMessages((prev) => [
+                    ...prev,
+                    { role: "assistant", content: "" },
+                ]);
+            }
+            // --- NEW: If it's an SMOLLM request, initialize its output accumulation ---
+            if (smollmRequestId) {
+                // Initialize the entry for this specific SMOLLM request ID
+                smollmPendingOutputs.current.set(smollmRequestId, "");
             }
           }
           break;
 
         case "update":
           {
-            if (isForCell) {
-              // Cell handling: Accumulate content for the cell's promise.
-              if (promiseData) {
-                promiseData.currentContent = (promiseData.currentContent || "") + output;
-                cellPromises.set(requestId, promiseData); // Ensure map is updated with accumulated content
-              }
+            // Generation update: update the output text.
+            const { output, tps, numTokens } = e.data;
+            setTps(tps);
+            setNumTokens(numTokens);
+
+            // If it's a regular chat generation, update chat messages
+            if (!smollmRequestId) {
+                setMessages((prev) => {
+                    const cloned = [...prev];
+                    const last = cloned.at(-1);
+                    cloned[cloned.length - 1] = {
+                        ...last,
+                        content: last.content + output,
+                    };
+                    return cloned;
+                });
             } else {
-              // Chat handling: Update chat UI.
-              setTps(tps);
-              setNumTokens(numTokens);
-              setMessages((prev) => {
-                const cloned = [...prev];
-                const last = cloned.at(-1);
-                cloned[cloned.length - 1] = {
-                  ...last,
-                  content: last.content + output,
-                };
-                return cloned;
-              });
+                // --- NEW: If it's an SMOLLM request, accumulate the output chunk ---
+                const currentAccumulatedOutput = smollmPendingOutputs.current.get(smollmRequestId) || "";
+                smollmPendingOutputs.current.set(smollmRequestId, currentAccumulatedOutput + output);
             }
           }
           break;
 
         case "complete":
-          // Generation complete: Re-enable the "Generate" button for chat
+          // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
 
-          if (isForCell) {
-            // Cell handling: Resolve the cell's promise with the final accumulated content.
-            if (promiseData && promiseData.resolve) {
-              promiseData.resolve(promiseData.currentContent);
-            }
-            cellPromises.delete(requestId); // Clean up the promise from the map
+          // --- NEW: Handle SMOLLM formula completion ---
+          if (smollmRequestId) {
+              // Retrieve the full accumulated output for this SMOLLM request
+              const finalOutput = smollmPendingOutputs.current.get(smollmRequestId) || "";
+
+              // Call the callback provided by univer-init.js to resolve its promise for the cell
+              const callback = setSmollmCompletionCallback; // This variable holds the function reference
+              if (typeof callback === 'function') {
+                  callback(smollmRequestId, finalOutput);
+              }
+
+              // --- NEW: Optionally, add the completed SMOLLM response to the chat as well ---
+              // You might want to also add the *prompt* to the chat first if you want the full conversation visible.
+              // For now, we'll just add the assistant's response.
+              setMessages((prev) => [
+                  ...prev,
+                  { role: "assistant", content: finalOutput }
+              ]);
+
+              // Clean up the accumulated output for this request
+              smollmPendingOutputs.current.delete(smollmRequestId);
+
           } else {
-            // Chat handling: No specific action needed here beyond what 'update' handles,
-            // as output is already accumulated in messages state.
+              // Regular chat completion: update tps and numTokens for the chat UI
+              // Assuming tps and numTokens are also sent with 'complete' for chat
+              setTps(e.data.tps);
+              setNumTokens(e.data.numTokens);
           }
           break;
 
         case "error":
-          if (isForCell) {
-              // Cell handling: Reject the cell's promise.
-              if (promiseData && promiseData.reject) {
-                  promiseData.reject("ERROR: " + data); // Using 'data' from destructuring
-              }
-              cellPromises.delete(requestId); // Clean up the promise from the map
-          } else {
-              // Chat handling: Set global error for chat UI.
-              setError(data); // Using 'data' from destructuring
+          setError(e.data.data);
+          // --- NEW: Handle errors for SMOLLM calls ---
+          if (smollmRequestId) {
+            // Resolve the SMOLLM promise with an error message
+            const callback = setSmollmCompletionCallback;
+            if (typeof callback === 'function') {
+                callback(smollmRequestId, `ERROR: ${e.data.data}`);
+            }
+            smollmPendingOutputs.current.delete(smollmRequestId); // Clean up
           }
           break;
       }
@@ -216,23 +245,27 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []); // Empty dependency array means this effect runs once on mount
+  }, []); // Empty dependency array means this runs once on mount, attaching listeners.
 
-  // Send the messages to the worker thread whenever the `messages` state changes.
+  // Send the messages to the worker thread whenever the `messages` state changes for chat.
+  // This useEffect specifically handles messages originating from the App's chat input.
   useEffect(() => {
-    if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet: do nothing.
+    const lastMessage = messages.at(-1);
+    // Only proceed if there's a last message and it's from the user
+    // and the model is not already running a generation from this input (to prevent double sends)
+    if (!lastMessage || lastMessage.role !== "user" || isRunning) {
       return;
     }
-    if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant (implies generation is ongoing or complete)
-      return;
-    }
-    setTps(null);
-    // Send chat messages to the worker without a requestId (it will be null/undefined)
-    worker.current.postMessage({ type: "generate", data: messages });
-  }, [messages, isRunning]);
 
+    // Check if this message was added as part of an SMOLLM call's chat display.
+    // If you want SMOLLM prompts to initiate a chat generation, you'd need to modify
+    // how they are added to `messages` and ensure they don't trigger this unless intended.
+    // For now, this `useEffect` is primarily for the main chat input.
+
+    setTps(null); // Reset TPS display
+    setIsRunning(true); // Indicate that the chat generation is starting
+    worker.current.postMessage({ type: "generate", data: messages });
+  }, [messages, isRunning]); // Dependencies on `messages` and `isRunning`
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
@@ -255,7 +288,6 @@ function App() {
               width="80%"
               height="auto"
               className="block"
-              alt="SmolLM2 Logo"
             ></img>
             <h1 className="text-4xl font-bold mb-1">SmolLM2 WebGPU</h1>
             <h2 className="font-semibold">
