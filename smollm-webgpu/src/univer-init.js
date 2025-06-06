@@ -1,4 +1,4 @@
-// univer-init.js
+// univer-init.js (Updated)
 
 import {
   createUniver,
@@ -13,34 +13,19 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
-// --- CORRECTED: Export a variable to hold the worker messenger function ---
+// --- Export a variable to hold the worker messenger function ---
 export let workerMessenger = null;
 
-// --- CORRECTED: Export a function to set the worker messenger ---
+// --- Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
+// --- Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
-// --- NEW: Map to store Promises' resolve functions for SMOLLM formula calls ---
-// This map holds the 'resolve' function for each SMOLLM formula's Promise,
-// keyed by a unique request ID. App.jsx will use this when the AI response is ready.
-const smollmResolvers = new Map();
-
-// --- CORRECTED: Export the actual function `setSmollmCompletionCallback` directly ---
-// App.jsx will call this with the requestId and finalOutput to resolve the promise.
-export function setSmollmCompletionCallback(requestId, finalOutput) {
-    if (smollmResolvers.has(requestId)) {
-        const resolve = smollmResolvers.get(requestId);
-        resolve(finalOutput); // Resolve the Promise, which updates the cell in Univer
-        smollmResolvers.delete(requestId); // Clean up the resolver from the map
-    } else {
-        console.warn(`No resolver found for SMOLLM request ID: ${requestId}`);
-    }
-}
-
+// --- NEW: Map to store the cell location for each SMOLLM request ---
+const smollmRequestMap = new Map();
 
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
@@ -52,7 +37,7 @@ const { univerAPI } = createUniver({
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
-// --- NEW: Assign univerAPI to the global export ---
+// --- Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
 
 /* ------------------------------------------------------------------ */
@@ -104,7 +89,7 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  async (prompt) => {
+  async (prompt, row, col, sheetId) => { // Added row, col, sheetId for cell targeting
     // Ensure prompt is a string
     const stringPrompt = String(prompt);
 
@@ -114,35 +99,22 @@ univerAPI.getFormula().registerFunction(
       return "ERROR: AI not ready";
     }
 
-    // --- NEW: Generate a unique request ID for this specific SMOLLM call ---
-    // This ID helps App.jsx match the AI's response back to this formula instance.
+    // --- NEW: Generate a unique request ID and store cell info ---
     const smollmRequestId = `smollm-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    smollmRequestMap.set(smollmRequestId, { row, col, sheetId }); // Store the cell's location
 
-    // --- NEW: Return a Promise that will resolve with the AI response ---
-    // The cell will display a loading state until this Promise resolves.
-    return new Promise((resolve, reject) => {
-      // Store the 'resolve' function in our map, keyed by the unique request ID.
-      // App.jsx will later call the callback that uses this 'resolve' function.
-      smollmResolvers.set(smollmRequestId, resolve);
-
-      // Send the prompt to the worker via the messenger provided by App.jsx.
-      // We include the unique request ID so the worker (and App.jsx) can track it.
-      workerMessenger({
-        type: "generate",
-        smollmRequestId: smollmRequestId, // NEW: Pass the unique ID for this specific SMOLLM request
-        data: [{ role: "user", content: stringPrompt }], // Worker expects an array of messages
-        originalPromptForSmollm: stringPrompt // Pass original prompt for display in chat if desired
-      });
-
-      // Set a timeout to reject the promise if the AI takes too long
-      setTimeout(() => {
-        if (smollmResolvers.has(smollmRequestId)) {
-          smollmResolvers.delete(smollmRequestId);
-          // Also reject the promise if the AI response timed out
-          reject("ERROR: AI response timed out.");
-        }
-      }, 60000); // 60 seconds timeout
+    // Send the prompt to the worker via the messenger provided by App.jsx.
+    // Include the unique request ID and the prompt itself.
+    workerMessenger({
+      type: "generate",
+      smollmRequestId: smollmRequestId, // Pass the unique ID
+      data: [{ role: "user", content: stringPrompt }], // Worker expects an array of messages
+      originalPromptForSmollm: stringPrompt // Pass original prompt for display in chat if desired
     });
+
+    // Return a message indicating generation is in progress.
+    // The actual AI response will update the cell later.
+    return "Generating AI response...";
   },
   {
     description: 'customFunction.SMOLLM.description',
@@ -150,10 +122,13 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat, also updates the cell.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat, and updates the cell.',
           },
         },
       },
     },
   }
 );
+
+// --- NEW: Export the map for App.jsx to access cell locations ---
+export { smollmRequestMap };
