@@ -43,17 +43,32 @@ function App() {
   // and we need a mutable object that persists across renders.
   const smollmPendingOutputs = useRef(new Map());
 
+  // --- NEW: Ref to hold the current generation ID for tracking which generation is active in the chat UI ---
+  const currentChatGenerationId = useRef(null);
+
   function onEnter(message) {
+    // For regular chat input, we don't have a smollmRequestId, so it's a new chat session/turn.
+    // Set a temporary ID for tracking this specific chat generation in the UI.
+    const newChatGenId = `chat-${Date.now()}`;
+    currentChatGenerationId.current = newChatGenId;
+
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
     setIsRunning(true);
     setInput("");
+
+    // Trigger the worker directly with the new chat message.
+    // The `useEffect` below will only trigger for the *last* user message,
+    // which might include SMOLLM prompts if they are added to `messages` later.
+    // By sending it here, we ensure regular chat is handled immediately.
+    worker.current.postMessage({ type: "generate", data: [{ role: "user", content: message }], chatId: newChatGenId });
   }
 
   function onInterrupt() {
-    // NOTE: We do not set isRunning to false here because the worker
-    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
+    // When interrupted, reset the current chat generation ID
+    currentChatGenerationId.current = null;
+    setIsRunning(false); // Manually set to false, as the worker might not send 'complete' immediately
   }
 
   useEffect(() => {
@@ -69,18 +84,15 @@ function App() {
     target.style.height = `${newHeight}px`;
   }
 
-  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
-    // Create the worker if it does not yet exist.
     if (!worker.current) {
       worker.current = new Worker(new URL("./worker.js", import.meta.url), {
         type: "module",
       });
-      worker.current.postMessage({ type: "check" }); // Do a feature check
+      worker.current.postMessage({ type: "check" });
     }
 
     // --- UPDATED: Provide the worker messenger to univer-init.js ---
-    // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
         if (worker.current) {
             worker.current.postMessage(message);
@@ -92,21 +104,26 @@ function App() {
     // --- NEW: Provide the SMOLLM completion callback to univer-init.js ---
     // This function will be called by App.jsx when an SMOLLM generation is complete
     // It's used by univer-init.js to resolve the promise for the cell.
-    setSmollmCompletionCallback((requestId, finalOutput) => {
+    // We pass it a function that *uses* the internal `smollmPendingOutputs` map.
+    const smollmCompletionCallback = (requestId, finalOutput) => {
         // The actual logic for resolving the promise and updating the cell is in univer-init.js.
         // We simply provide this bridge function to univer-init.js.
         // There's no direct action needed here in App.jsx for the cell itself.
-    });
+        // But we need to ensure the `smollmPendingOutputs` map is cleaned up.
+        smollmPendingOutputs.current.delete(requestId);
+    };
+    setSmollmCompletionCallback(smollmCompletionCallback);
 
 
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
       // --- NEW: Extract smollmRequestId if present in the worker message ---
       const smollmRequestId = e.data.smollmRequestId;
+      // --- NEW: Also extract the optional chatId, for distinguishing chat generations ---
+      const chatId = e.data.chatId;
 
       switch (e.data.status) {
         case "loading":
-          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -116,7 +133,6 @@ function App() {
           break;
 
         case "progress":
-          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
@@ -128,30 +144,28 @@ function App() {
           break;
 
         case "done":
-          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
             prev.filter((item) => item.file !== e.data.file),
           );
           break;
 
         case "ready":
-          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
         case "start":
           {
             // Start generation
-            // If it's a regular chat generation (no smollmRequestId), add a new assistant message to chat
+            // --- UPDATED: Only add a new assistant message to chat if it's a regular chat generation ---
+            // If it's an SMOLLM request, we only want to accumulate its output for the cell.
+            // We'll add the *final* SMOLLM output to chat at 'complete' if desired.
             if (!smollmRequestId) {
                 setMessages((prev) => [
                     ...prev,
                     { role: "assistant", content: "" },
                 ]);
-            }
-            // --- NEW: If it's an SMOLLM request, initialize its output accumulation ---
-            if (smollmRequestId) {
-                // Initialize the entry for this specific SMOLLM request ID
+            } else {
+                // --- NEW: If it's an SMOLLM request, initialize its output accumulation ---
                 smollmPendingOutputs.current.set(smollmRequestId, "");
             }
           }
@@ -159,24 +173,28 @@ function App() {
 
         case "update":
           {
-            // Generation update: update the output text.
             const { output, tps, numTokens } = e.data;
             setTps(tps);
             setNumTokens(numTokens);
 
-            // If it's a regular chat generation, update chat messages
+            // --- UPDATED: Conditional logic for updating chat vs. accumulating for SMOLLM ---
             if (!smollmRequestId) {
-                setMessages((prev) => {
-                    const cloned = [...prev];
-                    const last = cloned.at(-1);
-                    cloned[cloned.length - 1] = {
-                        ...last,
-                        content: last.content + output,
-                    };
-                    return cloned;
-                });
+                // This is a regular chat generation. Update the last message.
+                // We also check if this update matches the currently active chat generation.
+                // This handles potential race conditions if multiple 'generate' requests are sent.
+                if (chatId === currentChatGenerationId.current) {
+                    setMessages((prev) => {
+                        const cloned = [...prev];
+                        const last = cloned.at(-1);
+                        cloned[cloned.length - 1] = {
+                            ...last,
+                            content: last.content + output,
+                        };
+                        return cloned;
+                    });
+                }
             } else {
-                // --- NEW: If it's an SMOLLM request, accumulate the output chunk ---
+                // This is an SMOLLM request. Accumulate output.
                 const currentAccumulatedOutput = smollmPendingOutputs.current.get(smollmRequestId) || "";
                 smollmPendingOutputs.current.set(smollmRequestId, currentAccumulatedOutput + output);
             }
@@ -184,34 +202,44 @@ function App() {
           break;
 
         case "complete":
-          // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
+          currentChatGenerationId.current = null; // Clear the active chat generation ID
 
           // --- NEW: Handle SMOLLM formula completion ---
           if (smollmRequestId) {
-              // Retrieve the full accumulated output for this SMOLLM request
               const finalOutput = smollmPendingOutputs.current.get(smollmRequestId) || "";
 
-              // Call the callback provided by univer-init.js to resolve its promise for the cell
-              const callback = setSmollmCompletionCallback; // This variable holds the function reference
-              if (typeof callback === 'function') {
-                  callback(smollmRequestId, finalOutput);
+              // Use the callback provided by univer-init.js to resolve its promise for the cell
+              // We retrieve the function reference from `_smollmCompletionCallback` via `univer-init.js` export
+              const completionCallbackFromUniver = univer_init_module.setSmollmCompletionCallback; // Assuming `univer-init.js` exports `setSmollmCompletionCallback`
+              if (typeof completionCallbackFromUniver === 'function') {
+                  completionCallbackFromUniver(smollmRequestId, finalOutput);
               }
 
               // --- NEW: Optionally, add the completed SMOLLM response to the chat as well ---
-              // You might want to also add the *prompt* to the chat first if you want the full conversation visible.
-              // For now, we'll just add the assistant's response.
-              setMessages((prev) => [
-                  ...prev,
-                  { role: "assistant", content: finalOutput }
-              ]);
+              // Add a user prompt to the chat that reflects the SMOLLM call,
+              // then the assistant's response.
+              // Note: The prompt from SMOLLM is `e.data.prompt` if the worker sent it,
+              // otherwise you might need to find a way to get it from `univer-init.js` side.
+              // For simplicity, let's assume `e.data.data` from the original 'generate' message
+              // contained the prompt. If not, you'll need to adapt this.
+              const originalPrompt = e.data.originalPromptForSmollm; // Assuming worker could send this back
+              if (originalPrompt) {
+                  setMessages((prev) => [
+                      ...prev,
+                      { role: "user", content: originalPrompt }, // Display the prompt that generated the SMOLLM output
+                      { role: "assistant", content: finalOutput }
+                  ]);
+              } else {
+                  setMessages((prev) => [
+                      ...prev,
+                      { role: "assistant", content: finalOutput } // Just add the assistant response
+                  ]);
+              }
 
-              // Clean up the accumulated output for this request
-              smollmPendingOutputs.current.delete(smollmRequestId);
-
+              smollmPendingOutputs.current.delete(smollmRequestId); // Clean up
           } else {
               // Regular chat completion: update tps and numTokens for the chat UI
-              // Assuming tps and numTokens are also sent with 'complete' for chat
               setTps(e.data.tps);
               setNumTokens(e.data.numTokens);
           }
@@ -221,51 +249,42 @@ function App() {
           setError(e.data.data);
           // --- NEW: Handle errors for SMOLLM calls ---
           if (smollmRequestId) {
-            // Resolve the SMOLLM promise with an error message
-            const callback = setSmollmCompletionCallback;
-            if (typeof callback === 'function') {
-                callback(smollmRequestId, `ERROR: ${e.data.data}`);
+            const completionCallbackFromUniver = univer_init_module.setSmollmCompletionCallback;
+            if (typeof completionCallbackFromUniver === 'function') {
+                completionCallbackFromUniver(smollmRequestId, `ERROR: ${e.data.data}`);
             }
             smollmPendingOutputs.current.delete(smollmRequestId); // Clean up
+          } else {
+            // If it's a chat error, append to chat as well
+            setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.data.data}` }]);
           }
+          setIsRunning(false);
+          currentChatGenerationId.current = null;
           break;
       }
     };
 
     const onErrorReceived = (e) => {
       console.error("Worker error:", e);
+      setError(e.message || "An unknown worker error occurred.");
+      setIsRunning(false);
+      currentChatGenerationId.current = null;
     };
 
-    // Attach the callback function as an event listener.
     worker.current.addEventListener("message", onMessageReceived);
     worker.current.addEventListener("error", onErrorReceived);
 
-    // Define a cleanup function for when the component is unmounted.
     return () => {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
   }, []); // Empty dependency array means this runs once on mount, attaching listeners.
 
-  // Send the messages to the worker thread whenever the `messages` state changes for chat.
-  // This useEffect specifically handles messages originating from the App's chat input.
-  useEffect(() => {
-    const lastMessage = messages.at(-1);
-    // Only proceed if there's a last message and it's from the user
-    // and the model is not already running a generation from this input (to prevent double sends)
-    if (!lastMessage || lastMessage.role !== "user" || isRunning) {
-      return;
-    }
-
-    // Check if this message was added as part of an SMOLLM call's chat display.
-    // If you want SMOLLM prompts to initiate a chat generation, you'd need to modify
-    // how they are added to `messages` and ensure they don't trigger this unless intended.
-    // For now, this `useEffect` is primarily for the main chat input.
-
-    setTps(null); // Reset TPS display
-    setIsRunning(true); // Indicate that the chat generation is starting
-    worker.current.postMessage({ type: "generate", data: messages });
-  }, [messages, isRunning]); // Dependencies on `messages` and `isRunning`
+  // --- UPDATED: Removed the useEffect that sends 'generate' messages based on 'messages' state ---
+  // The `onEnter` function now directly triggers the worker for chat messages.
+  // This prevents the `SMOLLM` formula's internal user message (if added to `messages` for display)
+  // from accidentally triggering a *second* full chat generation.
+  // The `SMOLLM` formula in `univer-init.js` will now directly send its request.
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
@@ -414,6 +433,8 @@ function App() {
                       onClick={() => {
                         worker.current.postMessage({ type: "reset" });
                         setMessages([]);
+                        // --- NEW: Reset current chat generation ID on reset ---
+                        currentChatGenerationId.current = null;
                       }}
                     >
                       Reset
