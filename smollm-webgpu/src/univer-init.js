@@ -22,6 +22,10 @@ export function setWorkerMessenger(messenger) {
 // --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
+// --- NEW: Export a map to store promises for cell-initiated AI requests ---
+// This map will hold the resolve/reject functions of Promises, keyed by requestId.
+export const cellPromises = new Map();
+
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
@@ -84,56 +88,58 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  // Assuming the second parameter is a context object provided by UniverJS
-  // containing the cell's row, column, and sheetId.
-  // Adjust 'callerContext.row', 'callerContext.column', 'callerContext.sheetId'
-  // based on the actual UniverJS API if different.
-  async (prompt, callerContext) => {
+  // IMPORTANT: Using a traditional function to ensure 'this' context is bound
+  async function (prompt) {
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
       return "ERROR: AI not ready";
     }
 
-    let originatingCell = null;
-    // Attempt to extract cell information from the context provided by UniverJS.
-    // This is a common pattern for custom spreadsheet functions.
-    if (callerContext && typeof callerContext === 'object') {
-        // These property names (row, column, sheetId) are common in such contexts.
-        // UniverJS usually uses 0-indexed rows/columns for internal APIs.
-        originatingCell = {
-            sheetId: callerContext.sheetId || univerAPI.getActiveWorkbook().getActiveSheet().getSheetId(), // Fallback if sheetId isn't directly in callerContext
-            row: callerContext.row,
-            col: callerContext.column
-        };
+    // --- NEW: Try to get cell coordinates from the 'this' context ---
+    // This is an assumption based on common spreadsheet custom function APIs.
+    // If UniverJS 'this' context does not provide these, this part needs re-evaluation.
+    let sheetId, row, col;
+    try {
+        // Example: access context from 'this'. Specific properties may vary by Univer.js version.
+        // Assuming 'this' refers to the formula context for the current cell.
+        // You might need to inspect 'this' in your console if these are not directly available.
+        sheetId = this?.getUnitId ? this.getUnitId() : 'unknownSheet'; // getUnitId() is a common method for sheet ID
+        row = this?.row !== undefined ? this.row : -1; // 'row' property for row index
+        col = this?.col !== undefined ? this.col : -1; // 'col' property for column index
+    } catch (e) {
+        console.warn("Could not retrieve cell coordinates from 'this' context in SMOLLM:", e);
+        sheetId = 'dynamicSheet'; // Fallback if context is not available
+        row = Date.now(); // Use timestamp as a unique row identifier
+        col = Math.random(); // Use random as a unique col identifier
     }
 
-    if (!originatingCell || typeof originatingCell.row === 'undefined' || typeof originatingCell.col === 'undefined') {
-        console.error("Could not determine originating cell for SMOLLM formula. Caller context:", callerContext);
-        return "ERROR: Cell context missing";
-    }
+    // Generate a unique request ID that includes cell coordinates
+    const requestId = `${sheetId}_${row}_${col}_${Date.now()}`;
 
-    // Send the prompt AND the originating cell info to the worker.
-    workerMessenger({
-      type: "generate",
-      data: {
-        messages: [{ role: "user", content: prompt }], // Worker expects an array of messages
-        originatingCell: originatingCell // NEW: Pass the originating cell info
-      }
+    // Create a promise that will be resolved when the AI response comes back
+    const promise = new Promise((resolve, reject) => {
+      // Store the resolve/reject functions with the requestId
+      cellPromises.set(requestId, { resolve, reject, sheetId, row, col });
     });
 
-    // Return an immediate message indicating generation is in progress.
-    // The actual AI response will update this cell directly later via App.jsx.
-    return "Generating AI response...";
+    // Send the prompt to the worker, including the requestId for the cell
+    workerMessenger({
+      type: "generate-for-cell", // NEW type for cell requests
+      data: [{ role: "user", content: prompt }], // Worker expects an array of messages
+      requestId: requestId // Pass the unique request ID
+    });
+
+    // Return the promise immediately. Univer.js will display "Loading..." or similar
+    // until this promise resolves or rejects.
+    return promise;
   },
   {
     description: 'customFunction.SMOLLM.description',
-    // You might need to add a flag like `needsCellInfo: true` here if UniverJS requires it
-    // to pass the cell context to the custom function.
     locales: {
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and updates the calling cell with the response.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in cell and chat.',
           },
         },
       },
