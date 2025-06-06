@@ -8,14 +8,14 @@ import {
 /**
  * Helper function to perform feature detection for WebGPU
  */
-// let fp16_supported = false; // This line is commented out in your original code, keeping it that way.
+// let fp16_supported = false; // Currently unused, keep for reference
 async function check() {
   try {
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) {
       throw new Error("WebGPU is not supported (no adapter found)");
     }
-    // fp16_supported = adapter.features.has("shader-f16") // This line is commented out in your original code, keeping it that way.
+    // fp16_supported = adapter.features.has("shader-f16")
   } catch (e) {
     self.postMessage({
       status: "error",
@@ -36,8 +36,8 @@ class TextGenerationPipeline {
     });
 
     this.model ??= AutoModelForCausalLM.from_pretrained(this.model_id, {
-      dtype: "q4f16",
-      device: "webgpu",
+      dtype: "q4f16", // Quantized 4-bit float 16, optimized for performance
+      device: "webgpu", // Use WebGPU for accelerated inference
       progress_callback,
     });
 
@@ -48,79 +48,92 @@ class TextGenerationPipeline {
 const stopping_criteria = new InterruptableStoppingCriteria();
 
 let past_key_values_cache = null;
+let currentRequestId = null; // NEW: Global variable to store the request ID for cell updates
 
-// --- MODIFIED: 'generate' now accepts a 'payload' object ---
-async function generate(payload) {
-  // Destructure the payload to get both messages and the originating cell info
-  const { messages, originatingCell } = payload;
+async function generate(messages, requestId = null) { // NEW: Accept requestId
+  currentRequestId = requestId; // Store the current request ID
 
   // Retrieve the text-generation pipeline.
   const [tokenizer, model] = await TextGenerationPipeline.getInstance();
 
   const inputs = tokenizer.apply_chat_template(messages, {
-    add_generation_prompt: true,
-    return_dict: true,
+    add_generation_prompt: true, // Add a prompt for generation based on chat history
+    return_dict: true, // Return as a dictionary for model input
   });
 
   let startTime;
   let numTokens = 0;
   let tps;
-  const token_callback_function = () => {
-    startTime ??= performance.now();
 
-    if (numTokens++ > 0) {
+  const token_callback_function = () => {
+    startTime ??= performance.now(); // Start timer on first token
+
+    if (numTokens++ > 0) { // Increment tokens and calculate TPS after the first token
       tps = (numTokens / (performance.now() - startTime)) * 1000;
     }
   };
+
   const callback_function = (output) => {
-    // This callback is for streaming updates to the chat UI
+    // This callback is called for each streamed output token/chunk
     self.postMessage({
       status: "update",
       output,
       tps,
       numTokens,
+      requestId: currentRequestId, // NEW: Include requestId
     });
   };
 
   const streamer = new TextStreamer(tokenizer, {
-    skip_prompt: true,
-    skip_special_tokens: true,
+    skip_prompt: true, // Don't include the prompt in the streamed output
+    skip_special_tokens: true, // Don't include special tokens (e.g., EOS) in output
     callback_function,
     token_callback_function,
   });
 
-  // Tell the main thread we are starting
-  self.postMessage({ status: "start" });
+  // Tell the main thread we are starting generation
+  self.postMessage({ status: "start", requestId: currentRequestId }); // NEW: Include requestId
 
-  const { past_key_values, sequences } = await model.generate({
-    ...inputs,
-    past_key_values: past_key_values_cache,
+  try {
+    const { past_key_values, sequences } = await model.generate({
+      ...inputs,
+      past_key_values: past_key_values_cache, // Use cache for conversational memory
 
-    // Sampling
-    // do_sample: true,
-    // top_k: 3,
-    // temperature: 0.2,
+      // Sampling parameters (commented out by default)
+      // do_sample: true,
+      // top_k: 3,
+      // temperature: 0.2,
 
-    max_new_tokens: 1024,
-    streamer,
-    stopping_criteria,
-    return_dict_in_generate: true,
-  });
-  past_key_values_cache = past_key_values;
+      max_new_tokens: 1024, // Maximum number of tokens to generate
+      streamer, // Stream output to the main thread
+      stopping_criteria, // Allow interruption
+      return_dict_in_generate: true, // Return a dictionary with sequences and past_key_values
+    });
+    past_key_values_cache = past_key_values; // Update cache for next turn
 
-  const decoded = tokenizer.batch_decode(sequences, {
-    skip_special_tokens: true,
-  });
+    const decoded = tokenizer.batch_decode(sequences, {
+      skip_special_tokens: true, // Decode the full sequence without special tokens
+    });
 
-  const finalGeneratedText = decoded[0] || ""; // Get the first (and likely only) complete response
+    // Send the final output back to the main thread
+    self.postMessage({
+      status: "complete",
+      output: decoded[0], // Send the complete, decoded string from the generated sequence
+      tps, // Include tps and numTokens for complete message
+      numTokens,
+      requestId: currentRequestId, // NEW: Include requestId
+    });
 
-  // --- MODIFIED: Send the final output AND the originating cell info back to the main thread ---
-  self.postMessage({
-    status: "complete",
-    output: "", // Clear the streaming output as the generation is complete
-    finalOutput: finalGeneratedText, // Dedicated field for the final complete output
-    originatingCell: originatingCell, // Pass back the originating cell's info
-  });
+  } catch (error) {
+    console.error("Worker generation error:", error);
+    self.postMessage({
+      status: "error",
+      data: error.message,
+      requestId: currentRequestId, // NEW: Include requestId in error
+    });
+  } finally {
+    currentRequestId = null; // Reset requestId after completion or error to prevent cross-contamination
+  }
 }
 
 async function load() {
@@ -141,7 +154,7 @@ async function load() {
     data: "Compiling shaders and warming up model...",
   });
 
-  // Run model with dummy input to compile shaders
+  // Run model with dummy input to compile shaders and warm up the model
   const inputs = tokenizer("a");
   await model.generate({ ...inputs, max_new_tokens: 1 });
   self.postMessage({ status: "ready" });
@@ -149,7 +162,7 @@ async function load() {
 
 // Listen for messages from the main thread
 self.addEventListener("message", async (e) => {
-  const { type, data } = e.data;
+  const { type, data, requestId } = e.data; // NEW: Destructure requestId from event data
 
   switch (type) {
     case "check":
@@ -160,10 +173,14 @@ self.addEventListener("message", async (e) => {
       load();
       break;
 
-    // --- MODIFIED: Pass the entire 'data' payload to 'generate' ---
-    case "generate":
+    case "generate": // Existing chat-based generation
       stopping_criteria.reset();
-      generate(data); // 'data' now contains both 'messages' and 'originatingCell'
+      generate(data); // Call generate without a requestId (for chat)
+      break;
+
+    case "generate-for-cell": // NEW: Handle requests specifically for cell output
+      stopping_criteria.reset();
+      generate(data, requestId); // Call generate and pass the requestId
       break;
 
     case "interrupt":
@@ -171,8 +188,9 @@ self.addEventListener("message", async (e) => {
       break;
 
     case "reset":
-      past_key_values_cache = null;
+      past_key_values_cache = null; // Clear conversational memory
       stopping_criteria.reset();
+      currentRequestId = null; // Ensure requestId is also reset on full reset
       break;
   }
 });
