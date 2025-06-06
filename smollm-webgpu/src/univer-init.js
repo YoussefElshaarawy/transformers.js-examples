@@ -14,7 +14,6 @@ import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
 // --- NEW: Export a variable to hold the worker messenger function ---
-// This function will be set by App.jsx to allow Univer to send messages to the AI worker.
 export let workerMessenger = null;
 
 // --- NEW: Export a function to set the worker messenger ---
@@ -23,8 +22,6 @@ export function setWorkerMessenger(messenger) {
 }
 
 // --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
-// While not directly used *in* this file for the cell update logic (the Promise handles that),
-// it's good to keep it exported if other parts of your app might need it.
 export let globalUniverAPI = null;
 
 // --- NEW: Map to store Promises' resolve functions for SMOLLM formula calls ---
@@ -35,9 +32,14 @@ const smollmResolvers = new Map();
 // --- NEW: Function to set the callback for when SMOLLM results are ready ---
 // App.jsx will call this to register its callback, which will then resolve the
 // promises stored in `smollmResolvers`.
-let _smollmCompletionCallback = null; // Use an internal variable to hold the actual callback
-export function setSmollmCompletionCallback(callback) {
-  _smollmCompletionCallback = callback;
+export function setSmollmCompletionCallback(requestId, finalOutput) {
+    if (smollmResolvers.has(requestId)) {
+        const resolve = smollmResolvers.get(requestId);
+        resolve(finalOutput); // Resolve the Promise, which updates the cell in Univer
+        smollmResolvers.delete(requestId); // Clean up the resolver from the map
+    } else {
+        console.warn(`No resolver found for SMOLLM request ID: ${requestId}`);
+    }
 }
 
 
@@ -104,6 +106,9 @@ univerAPI.getFormula().registerFunction(
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
   async (prompt) => {
+    // Ensure prompt is a string
+    const stringPrompt = String(prompt);
+
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
       // Display an error in the cell immediately if the worker isn't ready
@@ -116,7 +121,7 @@ univerAPI.getFormula().registerFunction(
 
     // --- NEW: Return a Promise that will resolve with the AI response ---
     // The cell will display a loading state until this Promise resolves.
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       // Store the 'resolve' function in our map, keyed by the unique request ID.
       // App.jsx will later call the callback that uses this 'resolve' function.
       smollmResolvers.set(smollmRequestId, resolve);
@@ -124,10 +129,19 @@ univerAPI.getFormula().registerFunction(
       // Send the prompt to the worker via the messenger provided by App.jsx.
       // We include the unique request ID so the worker (and App.jsx) can track it.
       workerMessenger({
-        type: "generate", // Keep the type as 'generate' for worker simplicity
+        type: "generate",
         smollmRequestId: smollmRequestId, // NEW: Pass the unique ID for this specific SMOLLM request
-        data: [{ role: "user", content: prompt }] // Worker expects an array of messages
+        data: [{ role: "user", content: stringPrompt }], // Worker expects an array of messages
+        originalPromptForSmollm: stringPrompt // Pass original prompt for display in chat if desired
       });
+
+      // Set a timeout to reject the promise if the AI takes too long
+      setTimeout(() => {
+        if (smollmResolvers.has(smollmRequestId)) {
+          smollmResolvers.delete(smollmRequestId);
+          reject("ERROR: AI response timed out.");
+        }
+      }, 60000); // 60 seconds timeout
     });
   },
   {
@@ -143,14 +157,3 @@ univerAPI.getFormula().registerFunction(
     },
   }
 );
-
-// --- NEW: Logic to handle the completion of SMOLLM requests from App.jsx ---
-// This internal function is what `setSmollmCompletionCallback` will register.
-// It resolves the stored Promise for the specific SMOLLM call, updating the cell.
-_smollmCompletionCallback = (requestId, finalOutput) => {
-  if (smollmResolvers.has(requestId)) {
-    const resolve = smollmResolvers.get(requestId);
-    resolve(finalOutput); // Resolve the Promise, which updates the cell in Univer
-    smollmResolvers.delete(requestId); // Clean up the resolver from the map
-  }
-};
