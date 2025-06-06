@@ -1,138 +1,166 @@
-// worker.js
+import {
+  AutoTokenizer,
+  AutoModelForCausalLM,
+  TextStreamer,
+  InterruptableStoppingCriteria,
+} from "@huggingface/transformers";
 
-// Example simplified worker.js structure for illustration purposes.
-// Your actual worker.js likely has more complex logic for model inference
-// using @huggingface/transformers.js. You will need to integrate these
-// changes into your existing worker's message handling flow.
-
-import { pipeline } from '@huggingface/transformers';
-
-let generator = null; // Stores the loaded AI pipeline
-
-// --- NEW: Variables to track the current generation's context ---
-let currentAccumulatedOutput = ""; // Accumulates output for the current generation
-let currentSmollmRequestId = null;  // Stores the SMOLLM request ID for the current generation
-
-self.addEventListener('message', async (e) => {
-    // --- UPDATED: Destructure smollmRequestId from the incoming message data ---
-    const { type, data, smollmRequestId } = e.data;
-
-    switch (type) {
-        case 'check':
-            // Basic feature check logic. Send 'ready' if successful.
-            try {
-                // Perform necessary checks (e.g., WebGPU availability)
-                // For a real app, this might involve more sophisticated checks
-                self.postMessage({ status: 'ready' });
-            } catch (error) {
-                self.postMessage({ status: 'error', data: `Feature check failed: ${error.message}` });
-            }
-            break;
-
-        case 'load':
-            self.postMessage({ status: 'loading', data: 'Loading model...' });
-            try {
-                // Simulate loading progress and then load the actual pipeline
-                self.postMessage({ status: 'initiate', file: 'model_weights.bin', total: 100 });
-                await new Promise(r => setTimeout(r, 500)); // Simulate delay
-                self.postMessage({ status: 'progress', file: 'model_weights.bin', progress: 50, total: 100 });
-                await new Promise(r => setTimeout(r, 500)); // Simulate delay
-                self.postMessage({ status: 'progress', file: 'model_weights.bin', progress: 100, total: 100 });
-                self.postMessage({ status: 'done', file: 'model_weights.bin' });
-
-                // Initialize the AI model pipeline
-                generator = await pipeline('text-generation', 'HuggingFaceTB/SmolLM2-1.7B-Instruct', {
-                    // Add any specific model loading options you use here
-                });
-                self.postMessage({ status: 'ready' });
-            } catch (error) {
-                self.postMessage({ status: 'error', data: error.message });
-            }
-            break;
-
-        case 'generate':
-            if (!generator) {
-                // --- UPDATED: Include smollmRequestId in error messages too ---
-                self.postMessage({ status: 'error', data: 'Model not loaded.', smollmRequestId: smollmRequestId });
-                return;
-            }
-
-            // --- NEW: Reset for a new generation ---
-            currentAccumulatedOutput = "";
-            // --- NEW: Store the smollmRequestId if this is an SMOLLM-initiated generation ---
-            currentSmollmRequestId = smollmRequestId || null;
-
-            try {
-                // --- UPDATED: Pass smollmRequestId with 'start' message ---
-                self.postMessage({
-                    status: 'start',
-                    smollmRequestId: currentSmollmRequestId // Will be null for regular chat
-                });
-
-                // Extract the latest user prompt from the chat history
-                const prompt = data.at(-1).content;
-
-                // Perform AI text generation with a callback for streaming output
-                const result = await generator(prompt, {
-                    max_new_tokens: 100, // Or whatever max tokens you need
-                    do_sample: true,
-                    temperature: 0.7,
-                    // The callback_function gets called with each new token/chunk
-                    callback_function: (chunk) => {
-                        const output = chunk.text;
-                        currentAccumulatedOutput += output; // Accumulate the full output
-
-                        // --- UPDATED: Pass smollmRequestId with 'update' message ---
-                        self.postMessage({
-                            status: 'update',
-                            output: output,
-                            tps: 20, // Simulated TPS, replace with actual calculation if available
-                            numTokens: currentAccumulatedOutput.length, // Simulated token count
-                            smollmRequestId: currentSmollmRequestId // Will be null for regular chat
-                        });
-                    },
-                });
-
-                // Generation is complete
-                // --- UPDATED: Pass smollmRequestId and the final accumulated output with 'complete' message ---
-                self.postMessage({
-                    status: 'complete',
-                    output: currentAccumulatedOutput, // Send the full accumulated output
-                    smollmRequestId: currentSmollmRequestId, // Will be null for regular chat
-                    tps: 20, // Simulated TPS for chat summary
-                    numTokens: currentAccumulatedOutput.length // Simulated token count for chat summary
-                });
-
-            } catch (error) {
-                // Handle any errors during generation
-                self.postMessage({
-                    status: 'error',
-                    data: error.message,
-                    // --- UPDATED: Pass smollmRequestId on error ---
-                    smollmRequestId: currentSmollmRequestId
-                });
-            } finally {
-                // --- NEW: Clear the current request ID after generation completes or errors ---
-                currentSmollmRequestId = null;
-                currentAccumulatedOutput = "";
-            }
-            break;
-
-        case 'interrupt':
-            // Logic to stop ongoing generation if your model pipeline supports it.
-            // For example: generator.stop();
-            console.log("Generation interrupted by user.");
-            // You might need to send a 'complete' message here after stopping
-            // to ensure App.jsx cleans up its state.
-            // self.postMessage({ status: 'complete', smollmRequestId: currentSmollmRequestId, output: currentAccumulatedOutput });
-            break;
-
-        case 'reset':
-            // Logic to reset the model or internal state.
-            // For example: generator = null;
-            break;
-
-        default:
-            console.warn('Unknown message type:', type);
+/**
+ * Helper function to perform feature detection for WebGPU
+ */
+// let fp16_supported = false;
+async function check() {
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      throw new Error("WebGPU is not supported (no adapter found)");
     }
+    // fp16_supported = adapter.features.has("shader-f16")
+  } catch (e) {
+    self.postMessage({
+      status: "error",
+      data: e.toString(),
+    });
+  }
+}
+
+/**
+ * This class uses the Singleton pattern to enable lazy-loading of the pipeline
+ */
+class TextGenerationPipeline {
+  static model_id = "HuggingFaceTB/SmolLM2-1.7B-Instruct";
+
+  static async getInstance(progress_callback = null) {
+    this.tokenizer ??= AutoTokenizer.from_pretrained(this.model_id, {
+      progress_callback,
+    });
+
+    this.model ??= AutoModelForCausalLM.from_pretrained(this.model_id, {
+      dtype: "q4f16",
+      device: "webgpu",
+      progress_callback,
+    });
+
+    return Promise.all([this.tokenizer, this.model]);
+  }
+}
+
+const stopping_criteria = new InterruptableStoppingCriteria();
+
+let past_key_values_cache = null;
+async function generate(messages) {
+  // Retrieve the text-generation pipeline.
+  const [tokenizer, model] = await TextGenerationPipeline.getInstance();
+
+  const inputs = tokenizer.apply_chat_template(messages, {
+    add_generation_prompt: true,
+    return_dict: true,
+  });
+
+  let startTime;
+  let numTokens = 0;
+  let tps;
+  const token_callback_function = () => {
+    startTime ??= performance.now();
+
+    if (numTokens++ > 0) {
+      tps = (numTokens / (performance.now() - startTime)) * 1000;
+    }
+  };
+  const callback_function = (output) => {
+    self.postMessage({
+      status: "update",
+      output,
+      tps,
+      numTokens,
+    });
+  };
+
+  const streamer = new TextStreamer(tokenizer, {
+    skip_prompt: true,
+    skip_special_tokens: true,
+    callback_function,
+    token_callback_function,
+  });
+
+  // Tell the main thread we are starting
+  self.postMessage({ status: "start" });
+
+  const { past_key_values, sequences } = await model.generate({
+    ...inputs,
+    past_key_values: past_key_values_cache,
+
+    // Sampling
+    // do_sample: true,
+    // top_k: 3,
+    // temperature: 0.2,
+
+    max_new_tokens: 1024,
+    streamer,
+    stopping_criteria,
+    return_dict_in_generate: true,
+  });
+  past_key_values_cache = past_key_values;
+
+  const decoded = tokenizer.batch_decode(sequences, {
+    skip_special_tokens: true,
+  });
+
+  // Send the output back to the main thread
+  self.postMessage({
+    status: "complete",
+    output: decoded,
+  });
+}
+
+async function load() {
+  self.postMessage({
+    status: "loading",
+    data: "Loading model...",
+  });
+
+  // Load the pipeline and save it for future use.
+  const [tokenizer, model] = await TextGenerationPipeline.getInstance((x) => {
+    // We also add a progress callback to the pipeline so that we can
+    // track model loading.
+    self.postMessage(x);
+  });
+
+  self.postMessage({
+    status: "loading",
+    data: "Compiling shaders and warming up model...",
+  });
+
+  // Run model with dummy input to compile shaders
+  const inputs = tokenizer("a");
+  await model.generate({ ...inputs, max_new_tokens: 1 });
+  self.postMessage({ status: "ready" });
+}
+// Listen for messages from the main thread
+self.addEventListener("message", async (e) => {
+  const { type, data } = e.data;
+
+  switch (type) {
+    case "check":
+      check();
+      break;
+
+    case "load":
+      load();
+      break;
+
+    case "generate":
+      stopping_criteria.reset();
+      generate(data);
+      break;
+
+    case "interrupt":
+      stopping_criteria.interrupt();
+      break;
+
+    case "reset":
+      past_key_values_cache = null;
+      stopping_criteria.reset();
+      break;
+  }
 });
