@@ -1,159 +1,207 @@
-// univer-init.js
+// worker.js
 
 import {
-  createUniver,
-  defaultTheme,
-  LocaleType,
-  merge,
-} from '@univerjs/presets';
-import { UniverSheetsCorePreset } from '@univerjs/presets/preset-sheets-core';
-import enUS from '@univerjs/presets/preset-sheets-core/locales/en-US';
-import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
+  AutoTokenizer,
+  AutoModelForCausalLM,
+  TextStreamer,
+  InterruptableStoppingCriteria,
+} from "@huggingface/transformers";
 
-import './style.css';
-import '@univerjs/presets/lib/styles/preset-sheets-core.css';
-
-// --- NEW: Export a variable to hold the worker messenger function ---
-export let workerMessenger = null;
-
-// --- NEW: Export a function to set the worker messenger ---
-export function setWorkerMessenger(messenger) {
-  workerMessenger = messenger;
-}
-
-// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
-export let globalUniverAPI = null;
-
-// --- NEW: Map to store Promises' resolve functions for SMOLLM formula calls ---
-// This map holds the 'resolve' function for each SMOLLM formula's Promise,
-// keyed by a unique request ID. App.jsx will use this when the AI response is ready.
-const smollmResolvers = new Map();
-
-// --- NEW: Function to set the callback for when SMOLLM results are ready ---
-// App.jsx will call this to register its callback, which will then resolve the
-// promises stored in `smollmResolvers`.
-export function setSmollmCompletionCallback(requestId, finalOutput) {
-    if (smollmResolvers.has(requestId)) {
-        const resolve = smollmResolvers.get(requestId);
-        resolve(finalOutput); // Resolve the Promise, which updates the cell in Univer
-        smollmResolvers.delete(requestId); // Clean up the resolver from the map
-    } else {
-        console.warn(`No resolver found for SMOLLM request ID: ${requestId}`);
+/**
+ * Helper function to perform feature detection for WebGPU
+ */
+// let fp16_supported = false; // Keep original for now, if you use it later.
+async function check() {
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      throw new Error("WebGPU is not supported (no adapter found)");
     }
-}
-
-
-/* ------------------------------------------------------------------ */
-/* 1. Boot‑strap Univer and mount inside <div id="univer"> */
-/* ------------------------------------------------------------------ */
-const { univerAPI } = createUniver({
-  locale: LocaleType.EN_US,
-  locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
-  theme: defaultTheme,
-  presets: [UniverSheetsCorePreset({ container: 'univer' })],
-});
-
-// --- NEW: Assign univerAPI to the global export ---
-globalUniverAPI = univerAPI;
-
-/* ------------------------------------------------------------------ */
-/* 2. Create a visible 100 × 100 sheet */
-/* ------------------------------------------------------------------ */
-univerAPI.createUniverSheet({
-  name: 'Hello Univer',
-  rowCount: 100,
-  columnCount: 100,
-});
-
-/* ------------------------------------------------------------------ */
-/* 3. Register the TAYLORSWIFT() custom formula */
-/* ------------------------------------------------------------------ */
-const LYRICS = [
-  "Cause darling I'm a nightmare dressed like a daydream",
-  "We're happy, free, confused and lonely at the same time",
-  "You call me up again just to break me like a promise",
-  "I remember it all too well",
-  "Loving him was red—burning red",
-];
-
-univerAPI.getFormula().registerFunction(
-  'TAYLORSWIFT',
-  (...args) => {
-    const value = Array.isArray(args[0]) ? args[0][0] : args[0];
-    const idx = Number(value);
-    return idx >= 1 && idx <= LYRICS.length
-      ? LYRICS[idx - 1]
-      : LYRICS[Math.floor(Math.random() * LYRICS.length)];
-  },
-  {
-    description: 'customFunction.TAYLORSWIFT.description',
-    locales: {
-      enUS: {
-        customFunction: {
-          TAYLORSWIFT: {
-            description:
-              'Returns a Taylor Swift lyric (optional 1‑5 chooses a specific line).',
-          },
-        },
-      },
-    },
-  }
-);
-
-/* ------------------------------------------------------------------ */
-/* 4. Register the SMOLLM() custom formula */
-/* ------------------------------------------------------------------ */
-univerAPI.getFormula().registerFunction(
-  'SMOLLM',
-  async (prompt) => {
-    // Ensure prompt is a string
-    const stringPrompt = String(prompt);
-
-    if (!workerMessenger) {
-      console.error("AI worker messenger is not set!");
-      // Display an error in the cell immediately if the worker isn't ready
-      return "ERROR: AI not ready";
-    }
-
-    // --- NEW: Generate a unique request ID for this specific SMOLLM call ---
-    // This ID helps App.jsx match the AI's response back to this formula instance.
-    const smollmRequestId = `smollm-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-
-    // --- NEW: Return a Promise that will resolve with the AI response ---
-    // The cell will display a loading state until this Promise resolves.
-    return new Promise((resolve, reject) => {
-      // Store the 'resolve' function in our map, keyed by the unique request ID.
-      // App.jsx will later call the callback that uses this 'resolve' function.
-      smollmResolvers.set(smollmRequestId, resolve);
-
-      // Send the prompt to the worker via the messenger provided by App.jsx.
-      // We include the unique request ID so the worker (and App.jsx) can track it.
-      workerMessenger({
-        type: "generate",
-        smollmRequestId: smollmRequestId, // NEW: Pass the unique ID for this specific SMOLLM request
-        data: [{ role: "user", content: stringPrompt }], // Worker expects an array of messages
-        originalPromptForSmollm: stringPrompt // Pass original prompt for display in chat if desired
-      });
-
-      // Set a timeout to reject the promise if the AI takes too long
-      setTimeout(() => {
-        if (smollmResolvers.has(smollmRequestId)) {
-          smollmResolvers.delete(smollmRequestId);
-          reject("ERROR: AI response timed out.");
-        }
-      }, 60000); // 60 seconds timeout
+    // fp16_supported = adapter.features.has("shader-f16")
+  } catch (e) {
+    self.postMessage({
+      status: "error",
+      data: e.toString(),
     });
-  },
-  {
-    description: 'customFunction.SMOLLM.description',
-    locales: {
-      enUS: {
-        customFunction: {
-          SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat, also updates the cell.',
-          },
-        },
-      },
-    },
   }
-);
+}
+
+/**
+ * This class uses the Singleton pattern to enable lazy-loading of the pipeline
+ */
+class TextGenerationPipeline {
+  static model_id = "HuggingFaceTB/SmolLM2-1.7B-Instruct";
+
+  static async getInstance(progress_callback = null) {
+    this.tokenizer ??= AutoTokenizer.from_pretrained(this.model_id, {
+      progress_callback,
+    });
+
+    this.model ??= AutoModelForCausalLM.from_pretrained(this.model_id, {
+      dtype: "q4f16",
+      device: "webgpu",
+      progress_callback,
+    });
+
+    return Promise.all([this.tokenizer, this.model]);
+  }
+}
+
+const stopping_criteria = new InterruptableStoppingCriteria();
+
+// --- UPDATED: past_key_values_cache will only be used for regular chat conversations ---
+let past_key_values_cache = null;
+
+// --- NEW: Track the current smollmRequestId being processed ---
+let currentSmollmRequestId = null;
+
+async function generate(messages, smollmRequestId) {
+  // Retrieve the text-generation pipeline.
+  const [tokenizer, model] = await TextGenerationPipeline.getInstance();
+
+  // --- NEW: Set the current smollmRequestId for this generation, if provided ---
+  currentSmollmRequestId = smollmRequestId || null;
+
+  // The inputs will be different depending on whether it's an SMOLLM call or a chat call.
+  // For SMOLLM, the 'messages' array will typically just contain one user message (the prompt).
+  // For chat, it will contain the full history.
+
+  const inputs = tokenizer.apply_chat_template(messages, {
+    add_generation_prompt: true,
+    return_dict: true,
+  });
+
+  let startTime;
+  let numTokens = 0;
+  let tps;
+  const token_callback_function = () => {
+    startTime ??= performance.now();
+
+    if (numTokens++ > 0) {
+      tps = (numTokens / (performance.now() - startTime)) * 1000;
+    }
+  };
+
+  const callback_function = (output) => {
+    // --- UPDATED: Pass smollmRequestId with 'update' messages ---
+    self.postMessage({
+      status: "update",
+      output,
+      tps,
+      numTokens,
+      smollmRequestId: currentSmollmRequestId, // Will be null for regular chat
+    });
+  };
+
+  const streamer = new TextStreamer(tokenizer, {
+    skip_prompt: true,
+    skip_special_tokens: true,
+    callback_function,
+    token_callback_function,
+  });
+
+  // Tell the main thread we are starting
+  // --- UPDATED: Pass smollmRequestId with 'start' message ---
+  self.postMessage({
+    status: "start",
+    smollmRequestId: currentSmollmRequestId, // Will be null for regular chat
+  });
+
+  // --- UPDATED: Only use past_key_values_cache for non-SMOLLM (chat) requests ---
+  const current_past_key_values = smollmRequestId ? null : past_key_values_cache;
+
+  const { past_key_values, sequences } = await model.generate({
+    ...inputs,
+    past_key_values: current_past_key_values, // Use null for SMOLLM, cache for chat
+
+    // Sampling (keep your original settings)
+    // do_sample: true,
+    // top_k: 3,
+    // temperature: 0.2,
+
+    max_new_tokens: 1024,
+    streamer,
+    stopping_criteria,
+    return_dict_in_generate: true,
+  });
+
+  // --- UPDATED: Only update past_key_values_cache for non-SMOLLM (chat) requests ---
+  if (!smollmRequestId) {
+    past_key_values_cache = past_key_values;
+  }
+
+  const decoded = tokenizer.batch_decode(sequences, {
+    skip_special_tokens: true,
+  });
+
+  // Send the output back to the main thread
+  // --- UPDATED: Pass smollmRequestId with 'complete' message ---
+  self.postMessage({
+    status: "complete",
+    output: decoded.join(''), // Join the array of strings to a single string for final output
+    tps, // Include tps for chat summary
+    numTokens, // Include numTokens for chat summary
+    smollmRequestId: currentSmollmRequestId, // Will be null for regular chat
+  });
+
+  // --- NEW: Clear the smollmRequestId after completion/error ---
+  currentSmollmRequestId = null;
+}
+
+async function load() {
+  self.postMessage({
+    status: "loading",
+    data: "Loading model...",
+  });
+
+  // Load the pipeline and save it for future use.
+  const [tokenizer, model] = await TextGenerationPipeline.getInstance((x) => {
+    // We also add a progress callback to the pipeline so that we can
+    // track model loading.
+    self.postMessage(x);
+  });
+
+  self.postMessage({
+    status: "loading",
+    data: "Compiling shaders and warming up model...",
+  });
+
+  // Run model with dummy input to compile shaders
+  const inputs = tokenizer("a");
+  await model.generate({ ...inputs, max_new_tokens: 1 });
+  self.postMessage({ status: "ready" });
+}
+
+// Listen for messages from the main thread
+self.addEventListener("message", async (e) => {
+  // --- UPDATED: Destructure smollmRequestId from e.data ---
+  const { type, data, smollmRequestId } = e.data;
+
+  switch (type) {
+    case "check":
+      check();
+      break;
+
+    case "load":
+      load();
+      break;
+
+    case "generate":
+      stopping_criteria.reset();
+      // --- UPDATED: Pass smollmRequestId to the generate function ---
+      generate(data, smollmRequestId);
+      break;
+
+    case "interrupt":
+      stopping_criteria.interrupt();
+      // When interrupted, the model generation will eventually stop and send a 'complete' or 'error' message.
+      // We need to ensure that if it was an SMOLLM request, its promise is resolved.
+      // This is handled in App.jsx's `onMessageReceived` for 'complete'/'error' statuses.
+      break;
+
+    case "reset":
+      past_key_values_cache = null;
+      stopping_criteria.reset();
+      break;
+  }
+});
