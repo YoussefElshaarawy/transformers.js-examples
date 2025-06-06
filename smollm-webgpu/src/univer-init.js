@@ -90,36 +90,42 @@ univerAPI.getFormula().registerFunction(
   'SMOLLM',
   // IMPORTANT: Using a traditional function to ensure 'this' context is bound
   async function (prompt) {
+    console.log("[UniverInit] SMOLLM called for prompt:", prompt);
+
     if (!workerMessenger) {
-      console.error("AI worker messenger is not set!");
-      return "ERROR: AI not ready";
+      console.error("[UniverInit] AI worker messenger is not set!");
+      return "ERROR: AI not ready (Load model in chat first)";
     }
 
     // --- NEW: Try to get cell coordinates from the 'this' context ---
     // This is an assumption based on common spreadsheet custom function APIs.
-    // If UniverJS 'this' context does not provide these, this part needs re-evaluation.
+    // If UniverJS 'this' context does not provide these, the fallback will be used.
     let sheetId, row, col;
     try {
-        // Example: access context from 'this'. Specific properties may vary by Univer.js version.
-        // Assuming 'this' refers to the formula context for the current cell.
-        // You might need to inspect 'this' in your console if these are not directly available.
-        sheetId = this?.getUnitId ? this.getUnitId() : 'unknownSheet'; // getUnitId() is a common method for sheet ID
-        row = this?.row !== undefined ? this.row : -1; // 'row' property for row index
-        col = this?.col !== undefined ? this.col : -1; // 'col' property for column index
+        // Attempt to get context from 'this'
+        // These properties might vary depending on Univer.js version/API.
+        // If these fail, check 'this' in console: console.log(this);
+        sheetId = this?.getUnitId ? this.getUnitId() : 'unknownSheet';
+        row = this?.row !== undefined ? this.row : Date.now(); // Fallback to timestamp if row is undefined
+        col = this?.col !== undefined ? this.col : Math.random(); // Fallback to random if col is undefined
+        console.log(`[UniverInit] Retrieved cell coordinates: Sheet=${sheetId}, Row=${row}, Col=${col}`);
     } catch (e) {
-        console.warn("Could not retrieve cell coordinates from 'this' context in SMOLLM:", e);
-        sheetId = 'dynamicSheet'; // Fallback if context is not available
-        row = Date.now(); // Use timestamp as a unique row identifier
-        col = Math.random(); // Use random as a unique col identifier
+        console.warn("[UniverInit] Could not retrieve cell coordinates from 'this' context in SMOLLM:", e);
+        // Fallback to unique identifiers if direct access fails
+        sheetId = 'dynamicSheet';
+        row = Date.now(); // Unique ID
+        col = Math.floor(Math.random() * 1000000); // Unique ID
+        console.log(`[UniverInit] Using fallback coordinates: Sheet=${sheetId}, Row=${row}, Col=${col}`);
     }
 
     // Generate a unique request ID that includes cell coordinates
-    const requestId = `${sheetId}_${row}_${col}_${Date.now()}`;
+    const requestId = `${sheetId}_${row}_${col}`; // Removed timestamp for consistent ID across updates for same cell, if we stream
 
     // Create a promise that will be resolved when the AI response comes back
     const promise = new Promise((resolve, reject) => {
       // Store the resolve/reject functions with the requestId
-      cellPromises.set(requestId, { resolve, reject, sheetId, row, col });
+      cellPromises.set(requestId, { resolve, reject, sheetId, row, col, currentContent: "" });
+      console.log(`[UniverInit] Stored promise for requestId: ${requestId}. Map size: ${cellPromises.size}`);
     });
 
     // Send the prompt to the worker, including the requestId for the cell
@@ -128,6 +134,7 @@ univerAPI.getFormula().registerFunction(
       data: [{ role: "user", content: prompt }], // Worker expects an array of messages
       requestId: requestId // Pass the unique request ID
     });
+    console.log(`[UniverInit] Sent message to worker for requestId: ${requestId}`);
 
     // Return the promise immediately. Univer.js will display "Loading..." or similar
     // until this promise resolves or rejects.
