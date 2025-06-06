@@ -84,14 +84,24 @@ function App() {
 
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
-      // Check if this message is for a specific cell request
-      const { requestId } = e.data;
+      const { status, output, tps, numTokens, data, requestId } = e.data; // Destructure all common properties
 
-      switch (e.data.status) {
+      // Determine if this message is specifically for a cell request.
+      // If requestId is null/undefined, or if it's not found in cellPromises, it's for chat.
+      const isForCell = requestId && cellPromises.has(requestId);
+      let promiseData = null;
+      if (isForCell) {
+          promiseData = cellPromises.get(requestId);
+      }
+
+      console.log(`[App.jsx] Received message: status=${status}, requestId=${requestId}, isForCell=${isForCell}`);
+
+
+      switch (status) {
         case "loading":
           // Model file start load: add a new progress item to the list.
           setStatus("loading");
-          setLoadingMessage(e.data.data);
+          setLoadingMessage(data); // Using 'data' from destructuring
           break;
 
         case "initiate":
@@ -124,11 +134,11 @@ function App() {
 
         case "start":
           {
-            if (requestId && cellPromises.has(requestId)) {
-              // This is a cell request, no chat UI update for 'start'
-              // The cell will display "Loading..." or similar via the Promise
+            if (isForCell) {
+              // Cell handling: The cell's promise is already established. No direct App.jsx UI update.
+              // Univer.js will display "Loading..." or similar via the Promise.
             } else {
-              // Existing chat message logic
+              // Chat handling
               setMessages((prev) => [
                 ...prev,
                 { role: "assistant", content: "" },
@@ -139,18 +149,14 @@ function App() {
 
         case "update":
           {
-            const { output, tps, numTokens } = e.data;
-
-            if (requestId && cellPromises.has(requestId)) {
-              // This is an update for a cell request.
-              // We accumulate the content here, and resolve the Promise with the full content at 'complete'.
-              const promiseData = cellPromises.get(requestId);
+            if (isForCell) {
+              // Cell handling: Accumulate content for the cell's promise.
               if (promiseData) {
                 promiseData.currentContent = (promiseData.currentContent || "") + output;
-                cellPromises.set(requestId, promiseData); // Update the map with accumulated content
+                cellPromises.set(requestId, promiseData); // Ensure map is updated with accumulated content
               }
             } else {
-              // Existing chat message logic
+              // Chat handling: Update chat UI.
               setTps(tps);
               setNumTokens(numTokens);
               setMessages((prev) => {
@@ -167,36 +173,31 @@ function App() {
           break;
 
         case "complete":
-          // Generation complete: re-enable the "Generate" button
+          // Generation complete: Re-enable the "Generate" button for chat
           setIsRunning(false);
 
-          const { output: finalOutput, tps: finalTps, numTokens: finalNumTokens } = e.data;
-
-          if (requestId && cellPromises.has(requestId)) {
-            // This is a cell request. Resolve the promise.
-            const { resolve, currentContent } = cellPromises.get(requestId);
-            if (resolve) {
-              resolve(currentContent); // Resolve with the accumulated content
+          if (isForCell) {
+            // Cell handling: Resolve the cell's promise with the final accumulated content.
+            if (promiseData && promiseData.resolve) {
+              promiseData.resolve(promiseData.currentContent);
             }
             cellPromises.delete(requestId); // Clean up the promise from the map
-
           } else {
-            // Existing chat message logic for direct chat interactions
-            setTps(finalTps); // Update for the chat if not already set
-            setNumTokens(finalNumTokens);
+            // Chat handling: No specific action needed here beyond what 'update' handles,
+            // as output is already accumulated in messages state.
           }
           break;
 
         case "error":
-          const { data: errorMessage } = e.data;
-          if (requestId && cellPromises.has(requestId)) {
-              const { reject } = cellPromises.get(requestId);
-              if (reject) {
-                  reject("ERROR: " + errorMessage);
+          if (isForCell) {
+              // Cell handling: Reject the cell's promise.
+              if (promiseData && promiseData.reject) {
+                  promiseData.reject("ERROR: " + data); // Using 'data' from destructuring
               }
-              cellPromises.delete(requestId);
+              cellPromises.delete(requestId); // Clean up the promise from the map
           } else {
-              setError(errorMessage);
+              // Chat handling: Set global error for chat UI.
+              setError(data); // Using 'data' from destructuring
           }
           break;
       }
@@ -228,7 +229,7 @@ function App() {
       return;
     }
     setTps(null);
-    // Send chat messages to the worker without a requestId
+    // Send chat messages to the worker without a requestId (it will be null/undefined)
     worker.current.postMessage({ type: "generate", data: messages });
   }, [messages, isRunning]);
 
@@ -396,7 +397,7 @@ function App() {
       <div className="mt-2 border dark:bg-gray-700 rounded-lg w-[600px] max-w-[80%] max-h-[200px] mx-auto relative mb-3 flex">
         <textarea
           ref={textareaRef}
-          className="scrollbar-thin w-[550px] dark:bg-gray-700 px-3 py-4 rounded-lg bg-transparent border-none outline-none text-gray-800 disabled:text-gray-400 dark:text-gray-200 placeholder-gray-500 dark:placeholder-400 disabled:placeholder-gray-200 resize-none disabled:cursor-not-allowed"
+          className="scrollbar-thin w-[550px] dark:bg-gray-700 px-3 py-4 rounded-lg bg-transparent border-none outline-none text-gray-800 disabled:text-gray-400 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 disabled:placeholder-gray-200 resize-none disabled:cursor-not-allowed"
           placeholder="Type your message..."
           type="text"
           rows={1}
