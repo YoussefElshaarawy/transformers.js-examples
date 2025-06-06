@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger and globalUniverAPI from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI } from './univer-init.js';
+// --- NEW: Import setWorkerMessenger, globalUniverAPI, and cellPromises from univer-init.js ---
+import { setWorkerMessenger, globalUniverAPI, cellPromises } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -41,9 +41,6 @@ function App() {
     setTps(null);
     setIsRunning(true);
     setInput("");
-    // NOTE: For chat-based input, we don't have an originating cell here
-    // The worker will simply generate and update the chat UI.
-    // The spreadsheet integration happens only when the SMOLLM formula is called.
   }
 
   function onInterrupt() {
@@ -65,7 +62,7 @@ function App() {
     target.style.height = `${newHeight}px`;
   }
 
-  // We use the useEffect hook to setup the worker as soon as the App component is mounted.
+  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
     // Create the worker if it does not yet exist.
     if (!worker.current) {
@@ -75,8 +72,8 @@ function App() {
       worker.current.postMessage({ type: "check" }); // Do a feature check
     }
 
-    // --- NEW: Provide the worker messenger to univer-init.js ---
-    // This allows the SMOLLM function in the sheet to send messages to the worker.
+    // Provide the worker messenger to univer-init.js.
+    // This allows the SMOLLM function in the spreadsheet to send messages to the worker.
     setWorkerMessenger((message) => {
         if (worker.current) {
             worker.current.postMessage(message);
@@ -87,6 +84,9 @@ function App() {
 
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
+      // Check if this message is for a specific cell request
+      const { requestId } = e.data;
+
       switch (e.data.status) {
         case "loading":
           // Model file start load: add a new progress item to the list.
@@ -124,68 +124,80 @@ function App() {
 
         case "start":
           {
-            // Start generation (for chat UI)
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", content: "" },
-            ]);
+            if (requestId && cellPromises.has(requestId)) {
+              // This is a cell request, no chat UI update for 'start'
+              // The cell will display "Loading..." or similar via the Promise
+            } else {
+              // Existing chat message logic
+              setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: "" },
+              ]);
+            }
           }
           break;
 
         case "update":
           {
-            // Generation update: update the output text in the chat UI.
             const { output, tps, numTokens } = e.data;
-            setTps(tps);
-            setNumTokens(numTokens);
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              // Ensure the last message is from assistant before updating its content
-              if (last && last.role === "assistant") {
+
+            if (requestId && cellPromises.has(requestId)) {
+              // This is an update for a cell request.
+              // We accumulate the content here, and resolve the Promise with the full content at 'complete'.
+              const promiseData = cellPromises.get(requestId);
+              if (promiseData) {
+                promiseData.currentContent = (promiseData.currentContent || "") + output;
+                cellPromises.set(requestId, promiseData); // Update the map with accumulated content
+              }
+            } else {
+              // Existing chat message logic
+              setTps(tps);
+              setNumTokens(numTokens);
+              setMessages((prev) => {
+                const cloned = [...prev];
+                const last = cloned.at(-1);
                 cloned[cloned.length - 1] = {
                   ...last,
                   content: last.content + output,
                 };
-              } else {
-                 // Fallback if last message isn't assistant (shouldn't happen with correct flow)
-                 cloned.push({ role: "assistant", content: output });
-              }
-              return cloned;
-            });
+                return cloned;
+              });
+            }
           }
           break;
 
         case "complete":
           // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
-          // --- NEW: Handle final output for spreadsheet ---
-          const { finalOutput, originatingCell } = e.data;
-          if (finalOutput && originatingCell && globalUniverAPI) {
-            try {
-              const { sheetId, row, col } = originatingCell;
-              const univerInstance = globalUniverAPI.getUniver();
-              // Get the active workbook and then the specific sheet by ID
-              const worksheet = univerInstance.getCurrentUniverSheet().getSheetBySheetId(sheetId);
 
-              if (worksheet) {
-                // UniverJS ranges are usually 0-indexed internally for getRangeByOffset
-                // Ensure row and col are 0-indexed if not already.
-                const range = worksheet.getRangeByOffset(row, col, row, col); // Target single cell
-                range.setValue(finalOutput);
-                console.log(`LLM output placed in cell: Sheet ${sheetId}, Row ${row}, Col ${col}`);
-              } else {
-                console.error("Sheet not found for ID:", sheetId);
-              }
-            } catch (error) {
-              console.error("Error updating spreadsheet cell:", error);
-              // You might want to display an error message to the user here
+          const { output: finalOutput, tps: finalTps, numTokens: finalNumTokens } = e.data;
+
+          if (requestId && cellPromises.has(requestId)) {
+            // This is a cell request. Resolve the promise.
+            const { resolve, currentContent } = cellPromises.get(requestId);
+            if (resolve) {
+              resolve(currentContent); // Resolve with the accumulated content
             }
+            cellPromises.delete(requestId); // Clean up the promise from the map
+
+          } else {
+            // Existing chat message logic for direct chat interactions
+            setTps(finalTps); // Update for the chat if not already set
+            setNumTokens(finalNumTokens);
           }
           break;
 
         case "error":
-          setError(e.data.data);
+          const { data: errorMessage } = e.data;
+          if (requestId && cellPromises.has(requestId)) {
+              const { reject } = cellPromises.get(requestId);
+              if (reject) {
+                  reject("ERROR: " + errorMessage);
+              }
+              cellPromises.delete(requestId);
+          } else {
+              setError(errorMessage);
+          }
           break;
       }
     };
@@ -203,22 +215,21 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, []); // Empty dependency array means this effect runs once on mount
 
-  // Send the messages to the worker thread whenever the messages state changes.
+  // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet from chat UI: do nothing.
+      // No user messages yet: do nothing.
       return;
     }
     if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant (means generation is ongoing)
+      // Do not update if the last message is from the assistant (implies generation is ongoing or complete)
       return;
     }
     setTps(null);
-    // When sending from the chat UI, there's no originatingCell for the spreadsheet.
-    // The worker will still process it for chat display.
-    worker.current.postMessage({ type: "generate", data: { messages: messages } });
+    // Send chat messages to the worker without a requestId
+    worker.current.postMessage({ type: "generate", data: messages });
   }, [messages, isRunning]);
 
 
@@ -243,6 +254,7 @@ function App() {
               width="80%"
               height="auto"
               className="block"
+              alt="SmolLM2 Logo"
             ></img>
             <h1 className="text-4xl font-bold mb-1">SmolLM2 WebGPU</h1>
             <h2 className="font-semibold">
@@ -384,7 +396,7 @@ function App() {
       <div className="mt-2 border dark:bg-gray-700 rounded-lg w-[600px] max-w-[80%] max-h-[200px] mx-auto relative mb-3 flex">
         <textarea
           ref={textareaRef}
-          className="scrollbar-thin w-[550px] dark:bg-gray-700 px-3 py-4 rounded-lg bg-transparent border-none outline-none text-gray-800 disabled:text-gray-400 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 disabled:placeholder-gray-200 resize-none disabled:cursor-not-allowed"
+          className="scrollbar-thin w-[550px] dark:bg-gray-700 px-3 py-4 rounded-lg bg-transparent border-none outline-none text-gray-800 disabled:text-gray-400 dark:text-gray-200 placeholder-gray-500 dark:placeholder-400 disabled:placeholder-gray-200 resize-none disabled:cursor-not-allowed"
           placeholder="Type your message..."
           type="text"
           rows={1}
@@ -411,13 +423,13 @@ function App() {
         ) : input.length > 0 ? (
           <div className="cursor-pointer" onClick={() => onEnter(input)}>
             <ArrowRightIcon
-              className="h-8 w-8 p-1 bg-gray-800 dark:bg-gray-100 text-white dark:text-black rounded-md absolute right-3 bottom-3"
+              className={`h-8 w-8 p-1 bg-gray-800 dark:bg-gray-100 text-white dark:text-black rounded-md absolute right-3 bottom-3`}
             />
           </div>
         ) : (
           <div>
             <ArrowRightIcon
-              className="h-8 w-8 p-1 bg-gray-200 dark:bg-gray-600 text-gray-50 dark:text-gray-800 rounded-md absolute right-3 bottom-3"
+              className={`h-8 w-8 p-1 bg-gray-200 dark:bg-gray-600 text-gray-50 dark:text-gray-800 rounded-md absolute right-3 bottom-3`}
             />
           </div>
         )}
