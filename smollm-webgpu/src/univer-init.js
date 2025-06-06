@@ -13,19 +13,15 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
-// --- NEW: Export a variable to hold the worker messenger function ---
 export let workerMessenger = null;
 
-// --- NEW: Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
-// --- NEW: Map to store the cell location for each SMOLLM request ---
-export const smollmRequestMap = new Map(); // Made exportable for App.jsx
+export const smollmRequestMap = new Map();
 
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
@@ -37,8 +33,8 @@ const { univerAPI } = createUniver({
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
-// --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
+console.log("Univer initialized, globalUniverAPI set:", globalUniverAPI); // Debug log
 
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
@@ -89,32 +85,28 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  async (prompt, row, col, sheetId) => { // Added row, col, sheetId for cell targeting
-    // Ensure prompt is a string
+  async (prompt, row, col, sheetId) => {
+    console.log("SMOLLM function called with:", { prompt, row, col, sheetId }); // Debug log
     const stringPrompt = String(prompt);
 
     if (!workerMessenger) {
-      console.error("AI worker messenger is not set!");
-      // Display an error in the cell immediately if the worker isn't ready
+      console.error("AI worker messenger is not set!"); // Debug error
       return "ERROR: AI not ready";
     }
 
-    // --- NEW: Generate a unique request ID and store cell info ---
     const smollmRequestId = `smollm-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    smollmRequestMap.set(smollmRequestId, { row, col, sheetId }); // Store the cell's location
+    smollmRequestMap.set(smollmRequestId, { row, col, sheetId });
+    console.log("SMOLLM: Registered request ID", smollmRequestId, "for cell", { row, col, sheetId }); // Debug log
 
-    // Send the prompt to the worker via the messenger provided by App.jsx.
-    // Include the unique request ID and the prompt itself.
     workerMessenger({
       type: "generate",
-      smollmRequestId: smollmRequestId, // Pass the unique ID
-      data: [{ role: "user", content: stringPrompt }], // Worker expects an array of messages
-      originalPromptForSmollm: stringPrompt // Pass original prompt for display in chat if desired
+      smollmRequestId: smollmRequestId,
+      data: [{ role: "user", content: stringPrompt }],
+      originalPromptForSmollm: stringPrompt
     });
+    console.log("SMOLLM: Message sent to worker for ID", smollmRequestId); // Debug log
 
-    // Return a message indicating generation is in progress.
-    // This will immediately put "Generating AI response..." in the cell.
-    return "Generating AI response...";
+    return "Generating AI response..."; // This is what should appear initially
   },
   {
     description: 'customFunction.SMOLLM.description',
