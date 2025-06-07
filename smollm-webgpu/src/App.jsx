@@ -129,44 +129,33 @@ function App() {
           }
           break;
 
-        case "update":
-          {
-            // Generation update: update the output text.
-            // Parse messages
-            const { output, tps, numTokens } = e.data;
-            setTps(tps);
-            setNumTokens(numTokens);
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: last.content + output,
-                useEffect(() => {
+       case "update":
+  {
+    const { output, tps, numTokens } = e.data;
+    setTps(tps);
+    setNumTokens(numTokens);
+
+    setMessages((prev) => {
+      const cloned = [...prev];
+      const last   = cloned.at(-1);
+      cloned[cloned.length - 1] = {
+        ...last,
+        content: last.content + output,
+      };
+      return cloned;
+    });
+
+    // ⬇ side-effect: write to A3 each update
     globalUniverAPI
       ?.getActiveWorkbook()
       ?.getActiveSheet()
-      ?.getRange('A3')
-      .setValue('hello world');
-  }, []); // ← runs once after first render
+      ?.getRange("A3")
+      .setValue("hello world");
+  }
+  break;
 
-              };
-              return cloned;
-            });
-          }
-          break;
-
-        case "complete":
-          // Generation complete: re-enable the "Generate" button
-          setIsRunning(false);
-          break;
-
-        case "error":
-          setError(e.data.data);
-          break;
       }
     };
-
     const onErrorReceived = (e) => {
       console.error("Worker error:", e);
     };
