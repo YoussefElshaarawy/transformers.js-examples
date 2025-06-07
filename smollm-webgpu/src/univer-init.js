@@ -16,20 +16,104 @@ export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// globalUniverAPI is still exported as a simple 'let' variable
 export let globalUniverAPI = null;
 
-// Univer initialization remains within DOMContentLoaded
+// --- Univer initialization moved into DOMContentLoaded for robustness ---
 document.addEventListener('DOMContentLoaded', () => {
   console.log('DOM Content Loaded. Initializing Univer...');
+
+  // --- NEW: Create and append the cell interaction bar ---
+  const cellBar = document.createElement('div');
+  cellBar.id = 'univer-cell-bar';
+  // Basic styling for the bar (similar to previous App.jsx styling)
+  cellBar.style.cssText = `
+    width: 100%;
+    background-color: #f3f4f6; /* light gray */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #e5e7eb; /* light border */
+    box-sizing: border-box; /* Include padding in width/height */
+  `;
+  document.body.prepend(cellBar); // Add the bar at the very top of the body
+
+  const cellRefInput = document.createElement('input');
+  cellRefInput.id = 'univer-cell-ref-input';
+  cellRefInput.type = 'text';
+  cellRefInput.placeholder = 'A1';
+  cellRefInput.value = 'A1'; // Default value
+  cellRefInput.title = 'Cell Reference (e.g. A1, B2)';
+  cellRefInput.style.cssText = `
+    width: 64px;
+    padding: 4px;
+    border-radius: 4px;
+    border: 1px solid #d1d5db;
+    text-align: center;
+    margin-right: 8px;
+    background-color: #ffffff; /* white background */
+  `;
+  cellRefInput.disabled = true; // Initially disabled
+
+  const cellValueInput = document.createElement('input');
+  cellValueInput.id = 'univer-cell-value-input';
+  cellValueInput.type = 'text';
+  cellValueInput.placeholder = 'Value';
+  cellValueInput.title = 'Cell Value';
+  cellValueInput.style.cssText = `
+    width: 224px;
+    padding: 4px;
+    border-radius: 4px;
+    border: 1px solid #d1d5db;
+    margin-right: 8px;
+    background-color: #ffffff; /* white background */
+  `;
+  cellValueInput.disabled = true; // Initially disabled
+
+  const setCellBtn = document.createElement('button');
+  setCellBtn.id = 'univer-set-cell-btn';
+  setCellBtn.textContent = 'Set';
+  setCellBtn.style.cssText = `
+    padding: 4px 12px;
+    background-color: #3b82f6; /* blue */
+    color: white;
+    border-radius: 4px;
+    margin-right: 8px;
+    cursor: pointer;
+    opacity: 0.5; /* disabled look */
+    border: none;
+  `;
+  setCellBtn.disabled = true; // Initially disabled
+
+  const getCellBtn = document.createElement('button');
+  getCellBtn.id = 'univer-get-cell-btn';
+  getCellBtn.textContent = 'Get';
+  getCellBtn.style.cssText = `
+    padding: 4px 12px;
+    background-color: #22c55e; /* green */
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.5; /* disabled look */
+    border: none;
+  `;
+  getCellBtn.disabled = true; // Initially disabled
+
+  cellBar.appendChild(cellRefInput);
+  cellBar.appendChild(cellValueInput);
+  cellBar.appendChild(setCellBtn);
+  cellBar.appendChild(getCellBtn);
+
+  // --- Initialize UniverJS after DOM elements are ready ---
   const { univerAPI } = createUniver({
     locale: LocaleType.EN_US,
     locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
     theme: defaultTheme,
-    presets: [UniverSheetsCorePreset({ container: 'univer' })],
+    presets: [UniverSheetsCorePreset({ container: 'univer' })], // Assumes 'univer' div exists in index.html
   });
 
-  globalUniverAPI = univerAPI; // This is where globalUniverAPI gets its value
+  globalUniverAPI = univerAPI;
   console.log('Univer API initialized and assigned to globalUniverAPI.');
 
   univerAPI.createUniverSheet({
@@ -41,6 +125,53 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Register custom functions *after* univerAPI is available
   registerCustomFormulas();
+
+  // --- NEW: Enable UI elements after Univer is fully ready ---
+  cellRefInput.disabled = false;
+  cellValueInput.disabled = false;
+  setCellBtn.disabled = false;
+  getCellBtn.disabled = false;
+  setCellBtn.style.opacity = '1';
+  getCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
+  getCellBtn.style.opacity = '1';
+  getCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
+  console.log('Univer cell interaction UI enabled.');
+
+  // --- Attach Event Listeners to the new UI elements ---
+  setCellBtn.addEventListener('click', () => {
+      // These checks are still good, even if UI is enabled only when ready
+      if (!globalUniverAPI) {
+          alert("Univer spreadsheet is not yet ready. Please wait.");
+          return;
+      }
+      try {
+          const cell = new UniverCell(cellRefInput.value);
+          if (cell.setValue(cellValueInput.value)) {
+              cellValueInput.value = ''; // Clear value after setting
+          } else {
+              alert("Failed to set cell value. Check console for details.");
+          }
+      } catch (e) {
+          alert("Failed to set cell value (initialization error or invalid reference). Check console for details.");
+          console.error("Error setting cell value via UniverCell:", e);
+      }
+  });
+
+  getCellBtn.addEventListener('click', () => {
+      if (!globalUniverAPI) {
+          alert("Univer spreadsheet is not yet ready. Please wait.");
+          return;
+      }
+      try {
+          const cell = new UniverCell(cellRefInput.value);
+          const value = cell.getValue();
+          cellValueInput.value = value !== undefined ? String(value) : "";
+          alert(`Value of ${cellRefInput.value}: ${value !== undefined ? value : "undefined"}`);
+      } catch (e) {
+          alert("Failed to get cell value. Check console for details.");
+          console.error("Error getting cell value via UniverCell:", e);
+      }
+  });
 });
 
 // --- Utility function to parse cell reference (e.g., "A1" to {row: 0, col: 0}) ---
@@ -63,8 +194,7 @@ function parseCellReference(cellReference) {
 // --- UniverCell Class for Object-Oriented Cell Interaction ---
 export class UniverCell {
   constructor(cellReference) {
-    // This check is still crucial: UniverCell is instantiated from App.jsx,
-    // and globalUniverAPI might not be set yet.
+    // This check is crucial for robustness.
     if (!globalUniverAPI) {
       throw new Error("Univer API is not initialized. Cannot create UniverCell instance.");
     }
