@@ -33,7 +33,7 @@ const { univerAPI } = createUniver({
 });
 
 // --- NEW: Assign univerAPI to the global export ---
-globalUniverAPI = univerAPI;
+globalUniverAPI = univerAPI; // This is still useful if other parts of your app need direct API access
 
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
@@ -115,3 +115,45 @@ univerAPI.getFormula().registerFunction(
     },
   }
 );
+
+/* ------------------------------------------------------------------ */
+/* 5. NEW: Function to set cell value from outside */
+/* ------------------------------------------------------------------ */
+/**
+ * Sets the value of a cell in the active sheet.
+ * @param {string} cellReference The cell reference (e.g., "A1", "B5").
+ * @param {string} value The value to set in the cell.
+ * @returns {boolean} True if successful, false otherwise.
+ */
+export function setCellValueInUniver(cellReference, value) {
+  if (!globalUniverAPI) {
+    console.error("Univer API is not initialized yet.");
+    return false;
+  }
+
+  const match = cellReference.match(/^([A-Z]+)([0-9]+)$/i);
+  if (!match) {
+    console.error("Invalid cell reference format:", cellReference);
+    return false;
+  }
+
+  const colLetters = match[1].toUpperCase();
+  let col = 0;
+  for (let i = 0; i < colLetters.length; i++) {
+    col = col * 26 + (colLetters.charCodeAt(i) - 65 + 1);
+  }
+  col = col - 1; // Convert to 0-based index
+
+  const row = parseInt(match[2], 10) - 1; // Convert to 0-based index
+
+  try {
+    globalUniverAPI.getActiveSheet().setRangeValue(
+      { row, column: col, rowCount: 1, columnCount: 1 },
+      [[value]]
+    );
+    return true;
+  } catch (e) {
+    console.error("Error setting cell value:", e);
+    return false;
+  }
+}
