@@ -7,8 +7,8 @@ import Progress from "./components/Progress";
 
 // --- Import setWorkerMessenger, globalUniverAPI, and univerReadyPromise ---
 import { setWorkerMessenger, globalUniverAPI, univerReadyPromise } from './univer-init.js';
-// --- Import Univer commands for cell updates ---
-import { SetRangeValuesCommand } from '@univerjs/core'; // Removed IRange as it's a type, not a runtime value
+// --- CORRECTED: Import Univer commands for cell updates from the right package ---
+import { SetRangeValuesCommand } from '@univerjs/sheets-commands'; // <-- CHANGED THIS LINE
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -247,8 +247,7 @@ function App() {
 
     const commandService = globalUniverAPI.getCommandService();
 
-    // --- FIX: Removed ': IRange' as it's TypeScript syntax ---
-    const range = {
+    const range = { // No more ': IRange'
       startRow: row,
       endRow: row,
       startColumn: col,
