@@ -5,10 +5,10 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger, globalUniverAPI, and univerReadyPromise ---
+// --- Import setWorkerMessenger, globalUniverAPI, and univerReadyPromise ---
 import { setWorkerMessenger, globalUniverAPI, univerReadyPromise } from './univer-init.js';
-// --- NEW: Import Univer commands for cell updates ---
-import { SetRangeValuesCommand, IRange } from '@univerjs/core';
+// --- Import Univer commands for cell updates ---
+import { SetRangeValuesCommand } from '@univerjs/core'; // Removed IRange as it's a type, not a runtime value
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -38,10 +38,10 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
-  // --- NEW: State for manual cell update inputs ---
+  // --- State for manual cell update inputs ---
   const [manualCellAddress, setManualCellAddress] = useState('A1');
   const [manualCellValue, setManualCellValue] = useState('Hello from App');
-  // --- NEW: State to track if Univer is ready for interaction ---
+  // --- State to track if Univer is ready for interaction ---
   const [isUniverReady, setIsUniverReady] = useState(false);
 
   function onEnter(message) {
@@ -247,7 +247,8 @@ function App() {
 
     const commandService = globalUniverAPI.getCommandService();
 
-    const range: IRange = {
+    // --- FIX: Removed ': IRange' as it's TypeScript syntax ---
+    const range = {
       startRow: row,
       endRow: row,
       startColumn: col,
