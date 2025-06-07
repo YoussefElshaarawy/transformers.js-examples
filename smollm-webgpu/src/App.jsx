@@ -142,6 +142,8 @@ function App() {
               cloned[cloned.length - 1] = {
                 ...last,
                 content: last.content + output,
+                globalUniverAPI.getActiveWorkbook().getActiveSheet().getRange('A3').setValue('hello world');
+
               };
               return cloned;
             });
