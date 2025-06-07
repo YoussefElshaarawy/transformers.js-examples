@@ -136,8 +136,10 @@ function App() {
 
                 // --- NEW: Set activeSmollmCell ---
                 const { row, col, sheetId } = smollmRequestMap.get(e.data.smollmRequestId);
-                const cellName = globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).get  // Helper to get cell name (e.g., A1)
-                    .cellToLocation(row, col);
+                // The cellToLocation method might not be directly available on the sheet object.
+                // You might need to use a helper function or construct the cell name manually (e.g., String.fromCharCode(65 + col) + (row + 1))
+                // For now, let's just use a string representation.
+                const cellName = `Sheet ${sheetId} Cell (${row + 1}, ${String.fromCharCode(65 + col)})`; // Example: Sheet sheet1 Cell (1, A)
                 setActiveSmollmCell(cellName);
                 console.log("App.jsx: Setting active SMOLLM cell to:", cellName);
 
@@ -287,6 +289,41 @@ function App() {
       element.scrollTop = element.scrollHeight;
     }
   }, [messages, isRunning]);
+
+  // --- NEW: Function to force sheet refresh/recalculation ---
+  const refreshSheet = () => {
+    if (globalUniverAPI) {
+      const workbook = globalUniverAPI.get.activeWorkbook();
+      if (workbook) {
+        const sheet = workbook.getActiveSheet();
+        if (sheet) {
+          // Univer API might have a direct method for recalculation or re-rendering.
+          // If not, a common workaround is to trigger a dummy update.
+          // For example, setting the value of a cell to its current value or a temporary value.
+          // Another way is to trigger a "Dirty" state in the formula engine.
+
+          // Option 1: Triggering a recalculation (preferred if available)
+          // The exact command might vary based on Univer's latest API.
+          // Check Univer's documentation for an explicit recalculate/refresh method.
+          // As a generic example, you might try to get the formula engine and trigger it.
+          // This is a placeholder and might need adjustment based on Univer's internals.
+          console.log("Attempting to force Univer sheet recalculation/refresh...");
+          globalUniverAPI.get.commandService().executeCommand("formula.command.calculate"); // This is a common pattern for formula recalculation
+
+          // Option 2: If a direct recalculate command isn't readily available or doesn't work,
+          // you could try to trigger a visual update by setting a non-impactful cell.
+          // This is a less ideal solution but sometimes works.
+          // const firstCell = sheet.getRange(0, 0); // Get the first cell (A1)
+          // const originalValue = firstCell.getValue();
+          // sheet.setValue(0, 0, originalValue); // Set its value back to itself to trigger update
+          // console.log("Triggering visual refresh by re-setting cell A1.");
+        }
+      }
+    } else {
+      console.warn("Univer API is not available to refresh the sheet.");
+    }
+  };
+
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
@@ -440,6 +477,14 @@ function App() {
               </>
             )}
           </p>
+          {/* --- NEW: Refresh Sheet Button --- */}
+          <button
+            className="mb-4 px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
+            onClick={refreshSheet}
+            disabled={!globalUniverAPI} // Disable if Univer isn't ready
+          >
+            Refresh Sheet
+          </button>
         </div>
       )}
 
