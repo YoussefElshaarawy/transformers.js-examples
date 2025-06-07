@@ -5,8 +5,12 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger from univer-init.js ---
-import { setWorkerMessenger } from './univer-init.js';
+// --- NEW: Import setWorkerMessenger, SMOLLM_RESPONSES, and globalUniverAPI from univer-init.js ---
+import {
+  setWorkerMessenger,
+  SMOLLM_RESPONSES, // Import the array to push AI outputs to
+  globalUniverAPI, // Import the Univer API to trigger sheet recalculations
+} from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -72,8 +76,10 @@ function App() {
       worker.current.postMessage({ type: "check" }); // Do a feature check
     }
 
-    // --- NEW: Provide the worker messenger to univer-init.js ---
-    // This allows the SMOLLM function in the sheet to send messages to the worker.
+    // --- Provide the worker messenger to univer-init.js ---
+    // This allows the SMOLLM custom formula (if we were to modify it to send prompts)
+    // to communicate with the worker. For now, it's primarily used if univer-init
+    // needed to send messages FROM the sheet to the worker directly.
     setWorkerMessenger((message) => {
         if (worker.current) {
             worker.current.postMessage(message);
@@ -151,6 +157,34 @@ function App() {
         case "complete":
           // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
+
+          // --- NEW: Capture the final output and add to SMOLLM_RESPONSES ---
+          // The 'messages' state should now contain the complete assistant response
+          // We use the state's current value directly from `messages` here.
+          const finalAssistantMessage = messages.at(-1);
+          if (finalAssistantMessage && finalAssistantMessage.role === "assistant") {
+            SMOLLM_RESPONSES.push(finalAssistantMessage.content);
+            console.log("SMOLLM_RESPONSES updated with new AI response:", SMOLLM_RESPONSES);
+
+            // --- NEW: Trigger Univer sheet recalculation ---
+            // This is crucial for =SMOLLM() formulas to update after the array changes.
+            if (globalUniverAPI) {
+              try {
+                const workbook = globalUniverAPI.getActiveWorkbook();
+                if (workbook) {
+                  const worksheet = workbook.getActiveSheet();
+                  if (worksheet) {
+                    // This tells Univer to re-evaluate formulas in the active sheet.
+                    // The exact API might vary slightly, but this is a common approach.
+                    globalUniverAPI.getFormula().calculate('sheet', workbook.getUnitId(), worksheet.getSheetId());
+                    console.log("Univer sheet recalculation triggered.");
+                  }
+                }
+              } catch (univerError) {
+                console.error("Error triggering Univer recalculation:", univerError);
+              }
+            }
+          }
           break;
 
         case "error":
@@ -172,16 +206,17 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, [messages, isRunning]); // Added messages and isRunning as dependencies to re-run effect for message updates.
 
   // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
+    // This useEffect is responsible for sending user messages to the worker for generation
     if (messages.filter((x) => x.role === "user").length === 0) {
       // No user messages yet: do nothing.
       return;
     }
     if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
+      // Do not update if the last message is from the assistant (i.e., we're still receiving or just completed)
       return;
     }
     setTps(null);
