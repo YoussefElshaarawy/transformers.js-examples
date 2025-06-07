@@ -7,8 +7,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- Import setWorkerMessenger, globalUniverAPI, and smollmRequestMap from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI, smollmRequestMap } from './univer-init.js';
+// --- Import setWorkerMessenger, globalUniverAPI, smollmRequestMap, and univerReadyPromise ---
+import { setWorkerMessenger, globalUniverAPI, smollmRequestMap, univerReadyPromise } from './univer-init.js'; // ADD univerReadyPromise HERE
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -44,10 +44,14 @@ function App() {
   // --- Ref to accumulate output for spreadsheet cells ---
   const smollmCellOutputAccumulator = useRef(new Map());
 
-  // --- NEW: State for manual cell input ---
+  // --- State for manual cell input ---
   const [manualCellAddress, setManualCellAddress] = useState("A1");
   const [manualCellValue, setManualCellValue] = useState("Hello from App!");
   const [manualCellSheetId, setManualCellSheetId] = useState('sheet-01'); // Assuming default sheet ID or get from UniverAPI
+
+  // --- NEW: State to track Univer's readiness ---
+  const [isUniverReady, setIsUniverReady] = useState(false);
+
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -57,8 +61,6 @@ function App() {
   }
 
   function onInterrupt() {
-    // NOTE: We do not set isRunning to false here because the worker
-    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
   }
 
@@ -77,7 +79,7 @@ function App() {
 
   // --- Function to execute the set-range-values command ---
   const setCellValueThroughCommand = (sheetId, row, col, value) => {
-      if (globalUniverAPI) {
+      if (globalUniverAPI && isUniverReady) { // Add isUniverReady check here
           try {
               globalUniverAPI.get.commandService().executeCommand('sheet.command.set-range-values', {
                   value: { v: value },
@@ -94,14 +96,15 @@ function App() {
               console.error("App.jsx: Error executing set-range-values command:", commandError);
           }
       } else {
-          console.warn("App.jsx: globalUniverAPI not ready to execute command.");
+          console.warn("App.jsx: globalUniverAPI or Univer not ready to execute command.", { globalUniverAPI: !!globalUniverAPI, isUniverReady });
       }
   };
 
-  // --- NEW: Function to handle manual cell update ---
-  const handleManualCellUpdate = () => {
-    if (!globalUniverAPI) {
-      console.warn("Univer API is not ready.");
+  // --- Function to handle manual cell update ---
+  const handleManualCellUpdate = async () => { // Make it async to await univerReadyPromise
+    if (!isUniverReady) { // Check the state directly
+      console.warn("Univer API is not ready yet for manual update.");
+      alert("Univer spreadsheet is still loading. Please wait a moment and try again.");
       return;
     }
 
@@ -129,173 +132,167 @@ function App() {
   };
 
 
-  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
-    // Create the worker if it does not yet exist.
-    if (!worker.current) {
-      worker.current = new Worker(new URL("./worker.js", import.meta.url), {
-        type: "module",
-      });
-      worker.current.postMessage({ type: "check" }); // Do a feature check
-      console.log("App.jsx: Worker initialized and check message sent."); // Debug log
+    // Await Univer's readiness before setting up worker and event listeners
+    async function initializeApp() {
+        console.log("App.jsx: Waiting for Univer to be ready...");
+        await univerReadyPromise; // Wait for the promise from univer-init.js to resolve
+        setIsUniverReady(true); // Update state once Univer is ready
+        console.log("App.jsx: Univer is reported ready!");
+
+        // Create the worker if it does not yet exist.
+        if (!worker.current) {
+          worker.current = new Worker(new URL("./worker.js", import.meta.url), {
+            type: "module",
+          });
+          worker.current.postMessage({ type: "check" }); // Do a feature check
+          console.log("App.jsx: Worker initialized and check message sent.");
+        }
+
+        setWorkerMessenger((message) => {
+            if (worker.current) {
+                console.log("App.jsx: Received message from Univer, forwarding to worker:", message);
+                worker.current.postMessage(message);
+            } else {
+                console.error("AI worker not ready for spreadsheet request.");
+            }
+        });
+
+        const onMessageReceived = (e) => {
+            console.log("App.jsx: Message from worker:", e.data);
+            switch (e.data.status) {
+                case "loading":
+                    setStatus("loading");
+                    setLoadingMessage(e.data.data);
+                    break;
+                case "initiate":
+                    setProgressItems((prev) => [...prev, e.data]);
+                    break;
+                case "progress":
+                    setProgressItems((prev) =>
+                        prev.map((item) => {
+                            if (item.file === e.data.file) {
+                                return { ...item, ...e.data };
+                            }
+                            return item;
+                        }),
+                    );
+                    break;
+                case "done":
+                    setProgressItems((prev) =>
+                        prev.filter((item) => item.file !== e.data.file),
+                    );
+                    break;
+                case "ready":
+                    setStatus("ready");
+                    console.log("App.jsx: Worker status is READY.");
+                    break;
+                case "start":
+                    {
+                        if (e.data.smollmRequestId) {
+                            smollmCellOutputAccumulator.current.set(e.data.smollmRequestId, '');
+                            console.log("App.jsx: SMOLLM request started, accumulator initialized for ID:", e.data.smollmRequestId);
+
+                            const { row, col, sheetId } = smollmRequestMap.get(e.data.smollmRequestId);
+                            const cellName = globalUniverAPI?.get.activeWorkbook()?.getSheetBySheetId(sheetId)?.get?.cellToLocation?.(row, col) ||
+                                            `Sheet ${sheetId} Cell (${row + 1}, ${String.fromCharCode(65 + col)})`;
+                            setActiveSmollmCell(cellName);
+                            console.log("App.jsx: Setting active SMOLLM cell to:", cellName);
+
+                        } else {
+                            setMessages((prev) => [
+                                ...prev,
+                                { role: "assistant", content: "" },
+                            ]);
+                        }
+                    }
+                    break;
+                case "update":
+                    {
+                        const { output, tps, numTokens, smollmRequestId } = e.data;
+                        console.log("App.jsx: Worker sending update:", e.data);
+
+                        if (!smollmRequestId) {
+                            setTps(tps);
+                            setNumTokens(numTokens);
+                            setMessages((prev) => {
+                                const cloned = [...prev];
+                                const last = cloned.at(-1);
+                                cloned[cloned.length - 1] = {
+                                    ...last,
+                                    content: last.content + output,
+                                };
+                                return cloned;
+                            });
+                        } else {
+                            console.log("App.jsx: Processing SMOLLM cell update for ID:", smollmRequestId);
+                            if (isUniverReady && smollmRequestMap.has(smollmRequestId)) { // Check isUniverReady
+                                const { row, col, sheetId } = smollmRequestMap.get(smollmRequestId);
+
+                                let currentAccumulated = smollmCellOutputAccumulator.current.get(smollmRequestId) || '';
+                                currentAccumulated += output;
+                                smollmCellOutputAccumulator.current.set(smollmRequestId, currentAccumulated);
+
+                                setCellValueThroughCommand(sheetId, row, col, currentAccumulated);
+
+                            } else {
+                                console.warn("App.jsx: smollmRequestId not found in smollmRequestMap or Univer not ready.", { smollmRequestId, isUniverReady, inMap: smollmRequestMap.has(smollmRequestId) });
+                            }
+                        }
+                    }
+                    break;
+                case "complete":
+                    setIsRunning(false);
+                    console.log("App.jsx: Worker sending complete:", e.data);
+
+                    const { smollmRequestId: completedSmollmId, finalOutput } = e.data;
+                    if (completedSmollmId && smollmRequestMap.has(completedSmollmId)) {
+                        const { row, col, sheetId } = smollmRequestMap.get(completedSmollmId);
+                        if (isUniverReady) { // Check isUniverReady
+                            setCellValueThroughCommand(sheetId, row, col, finalOutput);
+                        }
+                        smollmRequestMap.delete(completedSmollmId);
+                        smollmCellOutputAccumulator.current.delete(completedSmollmId);
+                        setActiveSmollmCell(null);
+                        console.log("App.jsx: Cleaned up SMOLLM request ID:", completedSmollmId);
+                    }
+                    break;
+                case "error":
+                    setError(e.data.data);
+                    console.error("App.jsx: Worker error:", e.data);
+                    const { smollmRequestId: errorSmollmId } = e.data;
+                    if (errorSmollmId && smollmRequestMap.has(errorSmollmId)) {
+                        const { row, col, sheetId } = smollmRequestMap.get(errorSmollmId);
+                        if (isUniverReady) { // Check isUniverReady
+                            setCellValueThroughCommand(sheetId, row, col, `ERROR: ${e.data.data}`);
+                        }
+                        smollmRequestMap.delete(errorSmollmId);
+                        smollmCellOutputAccumulator.current.delete(errorSmollmId);
+                        setActiveSmollmCell(null);
+                        console.log("App.jsx: Cleaned up errored SMOLLM request ID:", errorSmollmId);
+                    }
+                    break;
+            }
+        };
+
+        const onErrorReceived = (e) => {
+            console.error("App.jsx: Uncaught Worker error event:", e);
+        };
+
+        worker.current.addEventListener("message", onMessageReceived);
+        worker.current.addEventListener("error", onErrorReceived);
+
+        return () => {
+            if (worker.current) {
+                worker.current.removeEventListener("message", onMessageReceived);
+                worker.current.removeEventListener("error", onErrorReceived);
+            }
+        };
     }
 
-    // --- Provide the worker messenger to univer-init.js ---
-    // This allows the SMOLLM function in the sheet to send messages to the worker.
-    setWorkerMessenger((message) => {
-        if (worker.current) {
-            console.log("App.jsx: Received message from Univer, forwarding to worker:", message); // Debug log
-            worker.current.postMessage(message);
-        } else {
-            console.error("AI worker not ready for spreadsheet request."); // Debug error
-        }
-    });
+    initializeApp();
 
-    // Create a callback function for messages from the worker thread.
-    const onMessageReceived = (e) => {
-      console.log("App.jsx: Message from worker:", e.data); // Debug log for all worker messages
-      switch (e.data.status) {
-        case "loading":
-          setStatus("loading");
-          setLoadingMessage(e.data.data);
-          break;
-
-        case "initiate":
-          setProgressItems((prev) => [...prev, e.data]);
-          break;
-
-        case "progress":
-          setProgressItems((prev) =>
-            prev.map((item) => {
-              if (item.file === e.data.file) {
-                return { ...item, ...e.data };
-              }
-              return item;
-            }),
-          );
-          break;
-
-        case "done":
-          setProgressItems((prev) =>
-            prev.filter((item) => item.file !== e.data.file),
-          );
-          break;
-
-        case "ready":
-          setStatus("ready");
-          console.log("App.jsx: Worker status is READY."); // Debug log
-          break;
-
-        case "start":
-          {
-            // If it's a SMOLLM request, initialize the accumulator and set active cell.
-            if (e.data.smollmRequestId) {
-                smollmCellOutputAccumulator.current.set(e.data.smollmRequestId, '');
-                console.log("App.jsx: SMOLLM request started, accumulator initialized for ID:", e.data.smollmRequestId); // Debug log
-
-                // --- NEW: Set activeSmollmCell ---
-                const { row, col, sheetId } = smollmRequestMap.get(e.data.smollmRequestId);
-                // For a more user-friendly cell name display:
-                const cellName = globalUniverAPI?.get.activeWorkbook()?.getSheetBySheetId(sheetId)?.get?.cellToLocation?.(row, col) ||
-                                 `Sheet ${sheetId} Cell (${row + 1}, ${String.fromCharCode(65 + col)})`;
-                setActiveSmollmCell(cellName);
-                console.log("App.jsx: Setting active SMOLLM cell to:", cellName);
-
-            } else {
-                // Existing chat logic for regular chat inputs
-                setMessages((prev) => [
-                    ...prev,
-                    { role: "assistant", content: "" },
-                ]);
-            }
-          }
-          break;
-
-        case "update":
-          {
-            const { output, tps, numTokens, smollmRequestId } = e.data;
-            console.log("App.jsx: Worker sending update:", e.data);
-
-            if (!smollmRequestId) {
-                setTps(tps);
-                setNumTokens(numTokens);
-                setMessages((prev) => {
-                    const cloned = [...prev];
-                    const last = cloned.at(-1);
-                    cloned[cloned.length - 1] = {
-                        ...last,
-                        content: last.content + output,
-                    };
-                    return cloned;
-                });
-            } else {
-                // --- Handle SMOLLM cell update for streaming via command ---
-                console.log("App.jsx: Processing SMOLLM cell update for ID:", smollmRequestId);
-                if (globalUniverAPI && smollmRequestMap.has(smollmRequestId)) {
-                    const { row, col, sheetId } = smollmRequestMap.get(smollmRequestId);
-
-                    let currentAccumulated = smollmCellOutputAccumulator.current.get(smollmRequestId) || '';
-                    currentAccumulated += output;
-                    smollmCellOutputAccumulator.current.set(smollmRequestId, currentAccumulated);
-
-                    setCellValueThroughCommand(sheetId, row, col, currentAccumulated);
-
-                } else {
-                    console.warn("App.jsx: smollmRequestId not found in smollmRequestMap or globalUniverAPI not ready.", { smollmRequestId, globalUniverAPIReady: !!globalUniverAPI, inMap: smollmRequestMap.has(smollmRequestId) });
-                }
-            }
-          }
-          break;
-
-        case "complete":
-          setIsRunning(false);
-          console.log("App.jsx: Worker sending complete:", e.data);
-
-          const { smollmRequestId: completedSmollmId, finalOutput } = e.data;
-          if (completedSmollmId && smollmRequestMap.has(completedSmollmId)) {
-              const { row, col, sheetId } = smollmRequestMap.get(completedSmollmId);
-              if (globalUniverAPI) {
-                  // --- Use executeCommand for final update ---
-                  setCellValueThroughCommand(sheetId, row, col, finalOutput);
-              }
-              smollmRequestMap.delete(completedSmollmId);
-              smollmCellOutputAccumulator.current.delete(completedSmollmId);
-              setActiveSmollmCell(null);
-              console.log("App.jsx: Cleaned up SMOLLM request ID:", completedSmollmId);
-          }
-          break;
-
-        case "error":
-          setError(e.data.data);
-          console.error("App.jsx: Worker error:", e.data);
-          const { smollmRequestId: errorSmollmId } = e.data;
-          if (errorSmollmId && smollmRequestMap.has(errorSmollmId)) {
-              const { row, col, sheetId } = smollmRequestMap.get(errorSmollmId);
-              if (globalUniverAPI) {
-                  // --- Use executeCommand for error update ---
-                  setCellValueThroughCommand(sheetId, row, col, `ERROR: ${e.data.data}`);
-              }
-              smollmRequestMap.delete(errorSmollmId);
-              smollmCellOutputAccumulator.current.delete(errorSmollmId);
-              setActiveSmollmCell(null);
-              console.log("App.jsx: Cleaned up errored SMOLLM request ID:", errorSmollmId);
-          }
-          break;
-      }
-    };
-
-    const onErrorReceived = (e) => {
-      console.error("App.jsx: Uncaught Worker error event:", e);
-    };
-
-    worker.current.addEventListener("message", onMessageReceived);
-    worker.current.addEventListener("error", onErrorReceived);
-
-    return () => {
-      worker.current.removeEventListener("message", onMessageReceived);
-      worker.current.removeEventListener("error", onErrorReceived);
-    };
-  }, [setCellValueThroughCommand]);
+  }, [setCellValueThroughCommand, isUniverReady]); // isUniverReady added to dependency array
 
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
@@ -324,24 +321,21 @@ function App() {
 
   // --- Function to force sheet refresh/recalculation ---
   const refreshSheet = () => {
-    if (globalUniverAPI) {
+    if (globalUniverAPI && isUniverReady) { // Add isUniverReady check here
       const workbook = globalUniverAPI.get.activeWorkbook();
       if (workbook) {
         const sheet = workbook.getActiveSheet();
         if (sheet) {
-          // Use the dedicated refreshCanvas() method for visual updates
           sheet.refreshCanvas();
           console.log("Attempted to refresh Univer sheet canvas.");
-          // Also trigger formula recalculation in case any formulas are impacted
           globalUniverAPI.get.commandService().executeCommand("formula.command.calculate");
           console.log("Attempted to trigger Univer formula recalculation.");
         }
       }
     } else {
-      console.warn("Univer API is not available to refresh the sheet.");
+      console.warn("Univer API is not available or not ready to refresh the sheet.", { globalUniverAPI: !!globalUniverAPI, isUniverReady });
     }
   };
-
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
@@ -352,7 +346,7 @@ function App() {
             </div>
         )}
 
-        {/* --- NEW: Manual Cell Input Section (always visible) --- */}
+        {/* --- Manual Cell Input Section (always visible) --- */}
         <div className="w-full max-w-[600px] mx-auto p-4 flex flex-col gap-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-850">
             <h3 className="text-lg font-semibold mb-2">Manually Update Univer Cell</h3>
             <div className="flex items-center gap-2">
@@ -380,12 +374,12 @@ function App() {
             <button
                 className="mt-2 px-4 py-2 rounded-lg bg-green-500 text-white hover:bg-green-600 disabled:bg-green-200 disabled:cursor-not-allowed"
                 onClick={handleManualCellUpdate}
-                disabled={!globalUniverAPI} // Disable if Univer isn't ready
+                disabled={!isUniverReady} // Disable if Univer isn't ready
             >
                 Write to Cell
             </button>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-                Note: This uses the currently active sheet.
+                Note: This uses the currently active sheet (ID: `sheet-01`).
             </p>
         </div>
 
@@ -537,7 +531,7 @@ function App() {
           <button
             className="mb-4 px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
             onClick={refreshSheet}
-            disabled={!globalUniverAPI} // Disable if Univer isn't ready
+            disabled={!isUniverReady} // Disable if Univer isn't ready
           >
             Refresh Sheet
           </button>
