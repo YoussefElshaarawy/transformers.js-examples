@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI } from './univer-init.js'; // <-- Added globalUniverAPI
+// --- UPDATED: Import setWorkerMessenger AND setCellValueInUniver from univer-init.js ---
+import { setWorkerMessenger, setCellValueInUniver } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -38,7 +38,7 @@ function App() {
 
   // --- NEW: State for cell editor bar ---
   const [cellRef, setCellRef] = useState("A1");
-  const [cellValue, setCellValue] = useState("");
+  const [currentCellValue, setCurrentCellValue] = useState(""); // Renamed to avoid conflict
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -203,35 +203,13 @@ function App() {
     }
   }, [messages, isRunning]);
 
-  // --- NEW: Function to set cell content ---
-  function setCellContent() {
-    if (!globalUniverAPI) {
-      alert("Sheet not ready!");
-      return;
+  // --- NEW: Function to set cell content using the univer-init helper ---
+  function handleSetCellContent() {
+    if (setCellValueInUniver(cellRef, currentCellValue)) {
+      setCurrentCellValue(""); // Clear the value after setting
+    } else {
+      alert("Failed to set cell value. Check console for details.");
     }
-
-    // Convert 'A1' to zero-based row/column indices
-    const match = cellRef.match(/^([A-Z]+)([0-9]+)$/i);
-    if (!match) {
-      alert("Invalid cell reference!");
-      return;
-    }
-    // Convert column letters to 0-based index
-    const colLetters = match[1].toUpperCase();
-    let col = 0;
-    for (let i = 0; i < colLetters.length; i++) {
-      col *= 26;
-      col += colLetters.charCodeAt(i) - 65 + 1;
-    }
-    col = col - 1;
-    const row = parseInt(match[2], 10) - 1;
-
-    // Set value using Univer API
-    globalUniverAPI.getActiveSheet().setRangeValue(
-      { row, column: col, rowCount: 1, columnCount: 1 },
-      [[cellValue]]
-    );
-    setCellValue(""); // Clear the value after setting
   }
 
   return IS_WEBGPU_AVAILABLE ? (
@@ -248,14 +226,14 @@ function App() {
         />
         <input
           type="text"
-          value={cellValue}
-          onChange={e => setCellValue(e.target.value)}
+          value={currentCellValue}
+          onChange={e => setCurrentCellValue(e.target.value)}
           className="w-56 p-1 rounded border dark:bg-gray-900"
           placeholder="Value"
           title="Cell Value"
         />
         <button
-          onClick={setCellContent}
+          onClick={handleSetCellContent}
           className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
         >
           Set
