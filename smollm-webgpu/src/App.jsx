@@ -5,8 +5,10 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger from univer-init.js ---
-import { setWorkerMessenger } from './univer-init.js';
+// --- NEW: Import setWorkerMessenger, globalUniverAPI, and univerReadyPromise ---
+import { setWorkerMessenger, globalUniverAPI, univerReadyPromise } from './univer-init.js';
+// --- NEW: Import Univer commands for cell updates ---
+import { SetRangeValuesCommand, IRange } from '@univerjs/core';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -35,6 +37,12 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
+
+  // --- NEW: State for manual cell update inputs ---
+  const [manualCellAddress, setManualCellAddress] = useState('A1');
+  const [manualCellValue, setManualCellValue] = useState('Hello from App');
+  // --- NEW: State to track if Univer is ready for interaction ---
+  const [isUniverReady, setIsUniverReady] = useState(false);
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -72,8 +80,17 @@ function App() {
       worker.current.postMessage({ type: "check" }); // Do a feature check
     }
 
-    // --- NEW: Provide the worker messenger to univer-init.js ---
-    // This allows the SMOLLM function in the sheet to send messages to the worker.
+    // --- NEW: Wait for Univer to signal readiness from univer-init.js ---
+    async function waitForUniver() {
+        console.log("App.jsx: Waiting for Univer to be ready...");
+        await univerReadyPromise; // This will resolve when Univer's preset is ready
+        setIsUniverReady(true);
+        console.log("App.jsx: Univer is reported ready and accessible!");
+    }
+    waitForUniver();
+    // --- END NEW Univer Init ---
+
+    // --- Provide the worker messenger to univer-init.js (existing logic) ---
     setWorkerMessenger((message) => {
         if (worker.current) {
             worker.current.postMessage(message);
@@ -172,7 +189,7 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, []); // Empty dependency array means this runs once on mount
 
   // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
@@ -199,8 +216,94 @@ function App() {
     }
   }, [messages, isRunning]);
 
+  // --- NEW: Function to manually update a cell in Univer ---
+  const handleManualCellUpdate = () => {
+    if (!isUniverReady || !globalUniverAPI) {
+      console.warn("Univer API is not ready yet to update cells.");
+      return;
+    }
+
+    // A simple parser for A1 notation (e.g., "A1", "B10")
+    const colStr = manualCellAddress.match(/[A-Z]+/)?.[0];
+    const rowNumStr = manualCellAddress.match(/\d+/)?.[0];
+
+    if (!colStr || !rowNumStr) {
+      alert("Invalid cell address format (e.g., A1, B5)");
+      return;
+    }
+
+    // Convert column letter to 0-indexed number (A=0, B=1, etc.)
+    const col = colStr.split('').reduce((r, a) => r * 26 + parseInt(a, 36) - 9, 0);
+    // Convert row number to 0-indexed
+    const row = parseInt(rowNumStr) - 1;
+
+    const activeWorkbook = globalUniverAPI.getActiveWorkbook();
+    const activeSheet = activeWorkbook?.getActiveSheet();
+
+    if (!activeSheet) {
+      console.error("No active sheet found in Univer.");
+      return;
+    }
+
+    const commandService = globalUniverAPI.getCommandService();
+
+    const range: IRange = {
+      startRow: row,
+      endRow: row,
+      startColumn: col,
+      endColumn: col,
+    };
+
+    // Execute the command to set the cell value
+    commandService.executeCommand(SetRangeValuesCommand.id, {
+      workbookId: activeWorkbook.getUnitId(),
+      worksheetId: activeSheet.getSheetId(),
+      range: range,
+      values: [[manualCellValue]], // Values must be a 2D array
+    });
+
+    console.log(`Manually updated cell ${manualCellAddress} to "${manualCellValue}"`);
+  };
+  // --- END NEW: Manual cell update function ---
+
+
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
+
+      {/* --- NEW: Univer Cell Update UI --- */}
+      <div className="p-4 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-bold mb-2">Update Univer Cell</h3>
+        <div className="flex items-center space-x-2">
+          <input
+            type="text"
+            placeholder="Cell (e.g., A1)"
+            value={manualCellAddress}
+            onChange={(e) => setManualCellAddress(e.target.value.toUpperCase())}
+            className="w-32 p-2 border rounded bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+            disabled={!isUniverReady} // Disable inputs if Univer isn't ready
+          />
+          <input
+            type="text"
+            placeholder="Value"
+            value={manualCellValue}
+            onChange={(e) => setManualCellValue(e.target.value)}
+            className="flex-grow p-2 border rounded bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+            disabled={!isUniverReady} // Disable inputs if Univer isn't ready
+          />
+          <button
+            onClick={handleManualCellUpdate}
+            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            disabled={!isUniverReady} // Disable button if Univer isn't ready
+          >
+            Set Cell
+          </button>
+        </div>
+        {!isUniverReady && (
+          <p className="text-sm text-red-500 mt-1">Waiting for sheet to load...</p>
+        )}
+      </div>
+      {/* --- END NEW: Univer Cell Update UI --- */}
+
       {status === null && messages.length === 0 && (
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
