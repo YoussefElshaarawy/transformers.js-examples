@@ -129,30 +129,30 @@ function App() {
           }
           break;
 
-       case "update":
-  {
-    const { output, tps, numTokens } = e.data;
-    setTps(tps);
-    setNumTokens(numTokens);
+       case "update": {
+  const { output, tps, numTokens } = e.data;
+  setTps(tps);
+  setNumTokens(numTokens);
 
-    setMessages((prev) => {
-      const cloned = [...prev];
-      const last   = cloned.at(-1);
-      cloned[cloned.length - 1] = {
-        ...last,
-        content: last.content + output,
-      };
-      return cloned;
-    });
+  let full;                           // capture the rebuilt text
 
-    // ⬇ side-effect: write to A3 each update
-    globalUniverAPI
-      ?.getActiveWorkbook()
-      ?.getActiveSheet()
-      ?.getRange("A3")
-      .setValue(last.content);
-  }
-  break;
+  setMessages((prev) => {
+    const cloned = [...prev];
+    const last   = cloned.at(-1);
+    full = (last.content ?? "") + output;   // running total
+    cloned[cloned.length - 1] = { ...last, content: full };
+    return cloned;
+  });
+
+  // write the whole running answer, not just the chunk
+  globalUniverAPI
+    ?.getActiveWorkbook()
+    ?.getActiveSheet()
+    ?.getRange("A3")
+    .setValue(full);
+}
+break;
+
 
       }
     };
