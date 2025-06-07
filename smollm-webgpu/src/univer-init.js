@@ -11,15 +11,16 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
-// --- NEW: Export a variable to hold the worker messenger function ---
+// --- Export a variable to hold the worker messenger function ---
+// This is still used by App.jsx to provide the worker communication function
 export let workerMessenger = null;
 
-// --- NEW: Export a function to set the worker messenger ---
+// --- Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
+// --- Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
 /* ------------------------------------------------------------------ */
@@ -32,7 +33,7 @@ const { univerAPI } = createUniver({
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
-// --- NEW: Assign univerAPI to the global export ---
+// --- Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
 
 /* ------------------------------------------------------------------ */
@@ -82,25 +83,22 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 /* 4. Register the SMOLLM() custom formula */
 /* ------------------------------------------------------------------ */
+
+// --- NEW: An empty array to hold SMOLLM responses, exported for App.jsx to fill ---
+export const SMOLLM_RESPONSES = [];
+
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  async (prompt) => {
-    if (!workerMessenger) {
-      console.error("AI worker messenger is not set!");
-      return "ERROR: AI not ready";
+  (idx) => {
+    // Convert the input index to a 0-based array index
+    const responseIndex = Number(idx) - 1;
+
+    // Check if the index is valid and a response exists at that index
+    if (responseIndex >= 0 && responseIndex < SMOLLM_RESPONSES.length) {
+      return SMOLLM_RESPONSES[responseIndex];
     }
-
-    // Send the prompt to the worker.
-    // We are deliberately formatting this to look like a chat message
-    // because the worker.js cannot be modified to handle a new type.
-    workerMessenger({
-      type: "generate",
-      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
-    });
-
-    // Return a message indicating generation is in progress.
-    // The actual AI response will appear in the chat UI.
-    return "Generating AI response in chat...";
+    // Return a default message if no valid index or no responses yet
+    return `SMOLLM: No response available at index ${idx}. Generate some AI responses in the chat!`;
   },
   {
     description: 'customFunction.SMOLLM.description',
@@ -108,7 +106,7 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
+            description: 'Retrieves a stored SmolLM AI response by its index (e.g., =SMOLLM(1) for the first response).',
           },
         },
       },
