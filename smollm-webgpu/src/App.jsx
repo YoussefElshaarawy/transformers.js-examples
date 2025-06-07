@@ -70,6 +70,29 @@ function App() {
     target.style.height = `${newHeight}px`;
   }
 
+  // --- NEW: Function to execute the set-range-values command ---
+  const setCellValueThroughCommand = (sheetId, row, col, value) => {
+      if (globalUniverAPI) {
+          try {
+              globalUniverAPI.get.commandService().executeCommand('sheet.command.set-range-values', {
+                  value: { v: value },
+                  range: {
+                      startRow: row,
+                      startColumn: col,
+                      endRow: row,
+                      endColumn: col,
+                      sheetId: sheetId // Important to specify the sheetId here
+                  }
+              });
+              console.log("App.jsx: Successfully executed set-range-values command for R", row, "C", col, "S", sheetId, "with:", value);
+          } catch (commandError) {
+              console.error("App.jsx: Error executing set-range-values command:", commandError);
+          }
+      } else {
+          console.warn("App.jsx: globalUniverAPI not ready to execute command.");
+      }
+  };
+
   // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
     // Create the worker if it does not yet exist.
@@ -136,10 +159,9 @@ function App() {
 
                 // --- NEW: Set activeSmollmCell ---
                 const { row, col, sheetId } = smollmRequestMap.get(e.data.smollmRequestId);
-                // The cellToLocation method might not be directly available on the sheet object.
-                // You might need to use a helper function or construct the cell name manually (e.g., String.fromCharCode(65 + col) + (row + 1))
-                // For now, let's just use a string representation.
-                const cellName = `Sheet ${sheetId} Cell (${row + 1}, ${String.fromCharCode(65 + col)})`; // Example: Sheet sheet1 Cell (1, A)
+                // For a more user-friendly cell name display:
+                const cellName = globalUniverAPI?.get.activeWorkbook()?.getSheetBySheetId(sheetId)?.get?.cellToLocation?.(row, col) ||
+                                 `Sheet ${sheetId} Cell (${row + 1}, ${String.fromCharCode(65 + col)})`;
                 setActiveSmollmCell(cellName);
                 console.log("App.jsx: Setting active SMOLLM cell to:", cellName);
 
@@ -156,9 +178,8 @@ function App() {
         case "update":
           {
             const { output, tps, numTokens, smollmRequestId } = e.data;
-            console.log("App.jsx: Worker sending update:", e.data); // Debug log for update messages
+            console.log("App.jsx: Worker sending update:", e.data);
 
-            // --- Handle chat update for regular messages ---
             if (!smollmRequestId) {
                 setTps(tps);
                 setNumTokens(numTokens);
@@ -172,27 +193,19 @@ function App() {
                     return cloned;
                 });
             } else {
-                // --- NEW: Handle SMOLLM cell update for streaming ---
-                console.log("App.jsx: Processing SMOLLM cell update for ID:", smollmRequestId); // Debug log
+                // --- NEW: Handle SMOLLM cell update for streaming via command ---
+                console.log("App.jsx: Processing SMOLLM cell update for ID:", smollmRequestId);
                 if (globalUniverAPI && smollmRequestMap.has(smollmRequestId)) {
                     const { row, col, sheetId } = smollmRequestMap.get(smollmRequestId);
-                    console.log("App.jsx: Found cell info:", { row, col, sheetId }); // Debug log
 
-                    // Accumulate the output chunk
                     let currentAccumulated = smollmCellOutputAccumulator.current.get(smollmRequestId) || '';
                     currentAccumulated += output;
                     smollmCellOutputAccumulator.current.set(smollmRequestId, currentAccumulated);
-                    console.log("App.jsx: Accumulating output for ID", smollmRequestId, "Current:", currentAccumulated); // Debug log
 
-                    try {
-                        // Update the cell in Univer with the accumulated text, in the correct { v: ... } format
-                        globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: currentAccumulated }]]);
-                        console.log("App.jsx: Successfully updated cell R", row, "C", col, "S", sheetId, "with:", currentAccumulated); // Debug log
-                    } catch (updateError) {
-                        console.error("App.jsx: Error updating Univer cell:", updateError); // Debug error
-                    }
+                    setCellValueThroughCommand(sheetId, row, col, currentAccumulated);
+
                 } else {
-                    console.warn("App.jsx: smollmRequestId not found in smollmRequestMap or globalUniverAPI not ready.", { smollmRequestId, globalUniverAPIReady: !!globalUniverAPI, inMap: smollmRequestMap.has(smollmRequestId) }); // Debug warning
+                    console.warn("App.jsx: smollmRequestId not found in smollmRequestMap or globalUniverAPI not ready.", { smollmRequestId, globalUniverAPIReady: !!globalUniverAPI, inMap: smollmRequestMap.has(smollmRequestId) });
                 }
             }
           }
@@ -200,56 +213,43 @@ function App() {
 
         case "complete":
           setIsRunning(false);
-          console.log("App.jsx: Worker sending complete:", e.data); // Debug log for complete messages
+          console.log("App.jsx: Worker sending complete:", e.data);
 
-          // --- Handle SMOLLM completion and cleanup ---
           const { smollmRequestId: completedSmollmId, finalOutput } = e.data;
           if (completedSmollmId && smollmRequestMap.has(completedSmollmId)) {
               const { row, col, sheetId } = smollmRequestMap.get(completedSmollmId);
               if (globalUniverAPI) {
-                  try {
-                      // Ensure the final, complete output is set to the cell, in the correct { v: ... } format
-                      globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: finalOutput }]]);
-                      console.log("App.jsx: Final cell update for R", row, "C", col, "S", sheetId, "with:", finalOutput); // Debug log
-                  } catch (completeError) {
-                      console.error("App.jsx: Error during final cell update:", completeError); // Debug error
-                  }
+                  // --- NEW: Use executeCommand for final update ---
+                  setCellValueThroughCommand(sheetId, row, col, finalOutput);
               }
-              smollmRequestMap.delete(completedSmollmId); // Clean up the map from univer-init.js
-              smollmCellOutputAccumulator.current.delete(completedSmollmId); // Clean up the accumulator
-              setActiveSmollmCell(null); // --- NEW: Clear activeSmollmCell on completion ---
-              console.log("App.jsx: Cleaned up SMOLLM request ID:", completedSmollmId); // Debug log
+              smollmRequestMap.delete(completedSmollmId);
+              smollmCellOutputAccumulator.current.delete(completedSmollmId);
+              setActiveSmollmCell(null);
+              console.log("App.jsx: Cleaned up SMOLLM request ID:", completedSmollmId);
           }
-          // The general `setTps(tps)` and `setNumTokens(numTokens)` from `complete` can stay,
-          // but the message update only applies to regular chat.
           break;
 
         case "error":
           setError(e.data.data);
-          console.error("App.jsx: Worker error:", e.data); // Debug error
+          console.error("App.jsx: Worker error:", e.data);
           const { smollmRequestId: errorSmollmId } = e.data;
           if (errorSmollmId && smollmRequestMap.has(errorSmollmId)) {
               const { row, col, sheetId } = smollmRequestMap.get(errorSmollmId);
               if (globalUniverAPI) {
-                  try {
-                      // Update the cell with error message, in the correct { v: ... } format
-                      globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: `ERROR: ${e.data.data}` }]]);
-                      console.log("App.jsx: Updated cell R", row, "C", col, "S", sheetId, "with error."); // Debug log
-                  } catch (errorUpdateError) {
-                      console.error("App.jsx: Error updating cell with error message:", errorUpdateError); // Debug error
-                  }
+                  // --- NEW: Use executeCommand for error update ---
+                  setCellValueThroughCommand(sheetId, row, col, `ERROR: ${e.data.data}`);
               }
               smollmRequestMap.delete(errorSmollmId);
               smollmCellOutputAccumulator.current.delete(errorSmollmId);
-              setActiveSmollmCell(null); // --- NEW: Clear activeSmollmCell on error ---
-              console.log("App.jsx: Cleaned up errored SMOLLM request ID:", errorSmollmId); // Debug log
+              setActiveSmollmCell(null);
+              console.log("App.jsx: Cleaned up errored SMOLLM request ID:", errorSmollmId);
           }
           break;
       }
     };
 
     const onErrorReceived = (e) => {
-      console.error("App.jsx: Uncaught Worker error event:", e); // Debug error
+      console.error("App.jsx: Uncaught Worker error event:", e);
     };
 
     worker.current.addEventListener("message", onMessageReceived);
@@ -259,24 +259,21 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, [setCellValueThroughCommand]); // Add setCellValueThroughCommand to dependencies if it's not stable or memoized.
+                                   // Though in this case, it's defined outside, it will be stable.
 
   useEffect(() => {
-    // This useEffect is primarily for chat-initiated messages.
-    // It should NOT trigger for SMOLLM requests.
     if (messages.filter((x) => x.role === "user").length === 0) {
       return;
     }
     const lastMessage = messages.at(-1);
-    // Only process if the last message is a user message and not from a SMOLLM call.
-    // We assume chat messages added via onEnter don't have smollmRequestId
     if (lastMessage.role === "assistant" || lastMessage.smollmRequestId) {
         return;
     }
 
     setTps(null);
     worker.current.postMessage({ type: "generate", data: messages });
-    console.log("App.jsx: Chat-initiated message sent to worker:", messages); // Debug log
+    console.log("App.jsx: Chat-initiated message sent to worker:", messages);
   }, [messages, isRunning]);
 
   useEffect(() => {
@@ -297,26 +294,12 @@ function App() {
       if (workbook) {
         const sheet = workbook.getActiveSheet();
         if (sheet) {
-          // Univer API might have a direct method for recalculation or re-rendering.
-          // If not, a common workaround is to trigger a dummy update.
-          // For example, setting the value of a cell to its current value or a temporary value.
-          // Another way is to trigger a "Dirty" state in the formula engine.
-
-          // Option 1: Triggering a recalculation (preferred if available)
-          // The exact command might vary based on Univer's latest API.
-          // Check Univer's documentation for an explicit recalculate/refresh method.
-          // As a generic example, you might try to get the formula engine and trigger it.
-          // This is a placeholder and might need adjustment based on Univer's internals.
-          console.log("Attempting to force Univer sheet recalculation/refresh...");
-          globalUniverAPI.get.commandService().executeCommand("formula.command.calculate"); // This is a common pattern for formula recalculation
-
-          // Option 2: If a direct recalculate command isn't readily available or doesn't work,
-          // you could try to trigger a visual update by setting a non-impactful cell.
-          // This is a less ideal solution but sometimes works.
-          // const firstCell = sheet.getRange(0, 0); // Get the first cell (A1)
-          // const originalValue = firstCell.getValue();
-          // sheet.setValue(0, 0, originalValue); // Set its value back to itself to trigger update
-          // console.log("Triggering visual refresh by re-setting cell A1.");
+          // Use the dedicated refreshCanvas() method for visual updates
+          sheet.refreshCanvas();
+          console.log("Attempted to refresh Univer sheet canvas.");
+          // Also trigger formula recalculation in case any formulas are impacted
+          globalUniverAPI.get.commandService().executeCommand("formula.command.calculate");
+          console.log("Attempted to trigger Univer formula recalculation.");
         }
       }
     } else {
