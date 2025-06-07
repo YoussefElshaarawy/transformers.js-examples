@@ -7,7 +7,7 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger, globalUniverAPI, and smollmRequestMap from univer-init.js ---
+// --- Import setWorkerMessenger, globalUniverAPI, and smollmRequestMap from univer-init.js ---
 import { setWorkerMessenger, globalUniverAPI, smollmRequestMap } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
@@ -38,11 +38,16 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
-  // --- NEW: State to store the active SMOLLM cell location ---
+  // --- State to store the active SMOLLM cell location ---
   const [activeSmollmCell, setActiveSmollmCell] = useState(null); // e.g., { row: 0, col: 0, sheetId: 'sheet1' }
 
-  // --- NEW: Ref to accumulate output for spreadsheet cells ---
+  // --- Ref to accumulate output for spreadsheet cells ---
   const smollmCellOutputAccumulator = useRef(new Map());
+
+  // --- NEW: State for manual cell input ---
+  const [manualCellAddress, setManualCellAddress] = useState("A1");
+  const [manualCellValue, setManualCellValue] = useState("Hello from App!");
+  const [manualCellSheetId, setManualCellSheetId] = useState('sheet-01'); // Assuming default sheet ID or get from UniverAPI
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -70,7 +75,7 @@ function App() {
     target.style.height = `${newHeight}px`;
   }
 
-  // --- NEW: Function to execute the set-range-values command ---
+  // --- Function to execute the set-range-values command ---
   const setCellValueThroughCommand = (sheetId, row, col, value) => {
       if (globalUniverAPI) {
           try {
@@ -92,6 +97,37 @@ function App() {
           console.warn("App.jsx: globalUniverAPI not ready to execute command.");
       }
   };
+
+  // --- NEW: Function to handle manual cell update ---
+  const handleManualCellUpdate = () => {
+    if (!globalUniverAPI) {
+      console.warn("Univer API is not ready.");
+      return;
+    }
+
+    try {
+      // Get the active workbook and sheet to derive sheetId if not set manually
+      const activeWorkbook = globalUniverAPI.get.activeWorkbook();
+      const activeSheet = activeWorkbook?.getActiveSheet();
+      const currentSheetId = activeSheet?.getSheetId() || manualCellSheetId; // Use active sheet or fallback
+
+      // Convert cell address (e.g., "A1") to row and column indices
+      const { row, col } = activeSheet?.get?.cellNameToLocation?.(manualCellAddress) || { row: -1, col: -1 };
+
+      if (row === -1 || col === -1) {
+        console.error("Invalid cell address:", manualCellAddress);
+        alert(`Invalid cell address: ${manualCellAddress}. Please use formats like A1, B2.`);
+        return;
+      }
+
+      setCellValueThroughCommand(currentSheetId, row, col, manualCellValue);
+      console.log(`Manually updated cell ${manualCellAddress} on sheet ${currentSheetId} with value: "${manualCellValue}"`);
+    } catch (e) {
+      console.error("Error during manual cell update:", e);
+      alert("Failed to update cell. Check console for details.");
+    }
+  };
+
 
   // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
@@ -193,7 +229,7 @@ function App() {
                     return cloned;
                 });
             } else {
-                // --- NEW: Handle SMOLLM cell update for streaming via command ---
+                // --- Handle SMOLLM cell update for streaming via command ---
                 console.log("App.jsx: Processing SMOLLM cell update for ID:", smollmRequestId);
                 if (globalUniverAPI && smollmRequestMap.has(smollmRequestId)) {
                     const { row, col, sheetId } = smollmRequestMap.get(smollmRequestId);
@@ -219,7 +255,7 @@ function App() {
           if (completedSmollmId && smollmRequestMap.has(completedSmollmId)) {
               const { row, col, sheetId } = smollmRequestMap.get(completedSmollmId);
               if (globalUniverAPI) {
-                  // --- NEW: Use executeCommand for final update ---
+                  // --- Use executeCommand for final update ---
                   setCellValueThroughCommand(sheetId, row, col, finalOutput);
               }
               smollmRequestMap.delete(completedSmollmId);
@@ -236,7 +272,7 @@ function App() {
           if (errorSmollmId && smollmRequestMap.has(errorSmollmId)) {
               const { row, col, sheetId } = smollmRequestMap.get(errorSmollmId);
               if (globalUniverAPI) {
-                  // --- NEW: Use executeCommand for error update ---
+                  // --- Use executeCommand for error update ---
                   setCellValueThroughCommand(sheetId, row, col, `ERROR: ${e.data.data}`);
               }
               smollmRequestMap.delete(errorSmollmId);
@@ -259,8 +295,7 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, [setCellValueThroughCommand]); // Add setCellValueThroughCommand to dependencies if it's not stable or memoized.
-                                   // Though in this case, it's defined outside, it will be stable.
+  }, [setCellValueThroughCommand]);
 
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
@@ -287,7 +322,7 @@ function App() {
     }
   }, [messages, isRunning]);
 
-  // --- NEW: Function to force sheet refresh/recalculation ---
+  // --- Function to force sheet refresh/recalculation ---
   const refreshSheet = () => {
     if (globalUniverAPI) {
       const workbook = globalUniverAPI.get.activeWorkbook();
@@ -310,12 +345,50 @@ function App() {
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-        {/* --- NEW: Display active SMOLLM cell at the top --- */}
+        {/* --- Display active SMOLLM cell at the top --- */}
         {activeSmollmCell && (
             <div className="w-full text-center py-2 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200">
                 AI generating response for cell: <span className="font-bold">{activeSmollmCell}</span>
             </div>
         )}
+
+        {/* --- NEW: Manual Cell Input Section (always visible) --- */}
+        <div className="w-full max-w-[600px] mx-auto p-4 flex flex-col gap-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-850">
+            <h3 className="text-lg font-semibold mb-2">Manually Update Univer Cell</h3>
+            <div className="flex items-center gap-2">
+                <label htmlFor="cellAddress" className="w-20 text-right">Cell (e.g., A1):</label>
+                <input
+                    id="cellAddress"
+                    type="text"
+                    className="flex-1 border dark:border-gray-600 rounded-md p-2 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+                    value={manualCellAddress}
+                    onChange={(e) => setManualCellAddress(e.target.value.toUpperCase())} // Convert to uppercase
+                    placeholder="E.g., A1"
+                />
+            </div>
+            <div className="flex items-center gap-2">
+                <label htmlFor="cellValue" className="w-20 text-right">Value:</label>
+                <input
+                    id="cellValue"
+                    type="text"
+                    className="flex-1 border dark:border-gray-600 rounded-md p-2 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+                    value={manualCellValue}
+                    onChange={(e) => setManualCellValue(e.target.value)}
+                    placeholder="Enter value"
+                />
+            </div>
+            <button
+                className="mt-2 px-4 py-2 rounded-lg bg-green-500 text-white hover:bg-green-600 disabled:bg-green-200 disabled:cursor-not-allowed"
+                onClick={handleManualCellUpdate}
+                disabled={!globalUniverAPI} // Disable if Univer isn't ready
+            >
+                Write to Cell
+            </button>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+                Note: This uses the currently active sheet.
+            </p>
+        </div>
+
 
       {status === null && messages.length === 0 && (
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
@@ -460,7 +533,7 @@ function App() {
               </>
             )}
           </p>
-          {/* --- NEW: Refresh Sheet Button --- */}
+          {/* --- Refresh Sheet Button (still useful for general debugging) --- */}
           <button
             className="mb-4 px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
             onClick={refreshSheet}
