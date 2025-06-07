@@ -129,30 +129,32 @@ function App() {
           }
           break;
 
-       case "update": {
-  const { output, tps, numTokens } = e.data;
-  setTps(tps);
-  setNumTokens(numTokens);
+      case "update":
+          {
+            const { output, tps, numTokens } = e.data;
+            setTps(tps);
+            setNumTokens(numTokens);
 
-  let full;                           // capture the rebuilt text
+            let fullGeneratedText = "";
 
-  setMessages((prev) => {
-    const cloned = [...prev];
-    const last   = cloned.at(-1);
-    full = (last.content ?? "") + output;   // running total
-    cloned[cloned.length - 1] = { ...last, content: full };
-    return cloned;
-  });
+            setMessages((prev) => {
+              const cloned = [...prev];
+              const last = cloned.at(-1);
+              fullGeneratedText = last.content + output;
+              cloned[cloned.length - 1] = {
+                ...last,
+                content: fullGeneratedText,
+              };
+              return cloned;
+            });
 
-  // write the whole running answer, not just the chunk
-  globalUniverAPI
-    ?.getActiveWorkbook()
-    ?.getActiveSheet()
-    ?.getRange("A3")
-    .setValue(full);
-}
-break;
-
+            globalUniverAPI
+              ?.getActiveWorkbook()
+              ?.getActiveSheet()
+              ?.getRange("A3")
+              .setValue(fullGeneratedText);
+          }
+          break;
 
       }
     };
