@@ -23,6 +23,13 @@ export let globalUniverAPI = null;
 
 export const smollmRequestMap = new Map();
 
+// --- NEW: This promise will be resolved internally by Univer when it's ready ---
+let _resolveUniverReady;
+export const univerReadyPromise = new Promise(resolve => {
+  _resolveUniverReady = resolve; // Store the resolve function
+});
+
+
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
@@ -30,7 +37,19 @@ const { univerAPI } = createUniver({
   locale: LocaleType.EN_US,
   locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
   theme: defaultTheme,
-  presets: [UniverSheetsCorePreset({ container: 'univer' })],
+  presets: [
+    UniverSheetsCorePreset({
+      container: 'univer',
+      // --- IMPORTANT: This is the onReady callback for the core sheet preset ---
+      onReady: (univerInstance) => {
+        console.log("UniverSheetsCorePreset reports itself ready!");
+        // Resolve the promise, signaling that Univer is fully initialized and its services are available
+        if (_resolveUniverReady) {
+          _resolveUniverReady(true);
+        }
+      }
+    })
+  ],
 });
 
 globalUniverAPI = univerAPI;
