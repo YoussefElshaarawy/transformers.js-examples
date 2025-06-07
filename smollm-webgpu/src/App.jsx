@@ -5,8 +5,12 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger from univer-init.js ---
-import { setWorkerMessenger } from './univer-init.js';
+// --- NEW: Import setWorkerMessenger, SMOLLM_RESPONSES, and globalUniverAPI from univer-init.js ---
+import {
+  setWorkerMessenger,
+  SMOLLM_RESPONSES, // We'll still add to this array for history/other uses
+  globalUniverAPI, // Import the Univer API to update cells
+} from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -72,10 +76,11 @@ function App() {
       worker.current.postMessage({ type: "check" }); // Do a feature check
     }
 
-    // --- NEW: Provide the worker messenger to univer-init.js ---
-    // This allows the SMOLLM function in the sheet to send messages to the worker.
+    // --- Provide the worker messenger to univer-init.js ---
+    // This allows the SMOLLM function in the sheet to send messages to the worker via App.jsx
     setWorkerMessenger((message) => {
         if (worker.current) {
+            // Add a unique ID to track this request if needed, or just pass along relevant info
             worker.current.postMessage(message);
         } else {
             console.error("AI worker not ready for spreadsheet request.");
@@ -122,39 +127,98 @@ function App() {
         case "start":
           {
             // Start generation
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", content: "" },
-            ]);
+            // If this 'start' is from a spreadsheet request, we don't necessarily
+            // want to add it to chat messages unless we explicitly want to show
+            // all cell requests in the chat. For now, let's assume direct chat input
+            // will drive the chat UI.
+            if (!e.data.cellCoordinates) { // Only add to chat messages if not from a cell formula
+                setMessages((prev) => [
+                ...prev,
+                { role: "assistant", content: "" },
+                ]);
+            }
           }
           break;
 
         case "update":
           {
             // Generation update: update the output text.
-            // Parse messages
             const { output, tps, numTokens } = e.data;
             setTps(tps);
             setNumTokens(numTokens);
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: last.content + output,
-              };
-              return cloned;
-            });
+
+            // If this update is for a cell formula, we can't do partial updates
+            // easily in the cell, so we'll only update the chat UI partially.
+            if (!e.data.cellCoordinates) {
+                setMessages((prev) => {
+                    const cloned = [...prev];
+                    const last = cloned.at(-1);
+                    cloned[cloned.length - 1] = {
+                    ...last,
+                    content: last.content + output,
+                    };
+                    return cloned;
+                });
+            }
           }
           break;
 
         case "complete":
           // Generation complete: re-enable the "Generate" button
           setIsRunning(false);
+          const finalAssistantMessageContent = e.data.output; // The full output is in e.data.output
+
+          // --- Push the AI response to the shared SMOLLM_RESPONSES array ---
+          SMOLLM_RESPONSES.push(finalAssistantMessageContent);
+          console.log("SMOLLM_RESPONSES updated with new AI response:", SMOLLM_RESPONSES);
+
+          // --- NEW: Handle direct cell update if coordinates are provided ---
+          if (e.data.cellCoordinates && globalUniverAPI) {
+            const { workbookId, sheetId, row, col } = e.data.cellCoordinates;
+            try {
+              const workbook = globalUniverAPI.getUniver().getWorkBook(workbookId);
+              if (workbook) {
+                const worksheet = workbook.getSheetBySheetId(sheetId);
+                if (worksheet) {
+                  // Set the value of the specific cell that called SMOLLM
+                  worksheet.getRange(row, col).setValue(finalAssistantMessageContent);
+                  console.log(`Cell (${row},${col}) in sheet ${sheetId} updated with AI response.`);
+                }
+              }
+            } catch (univerError) {
+              console.error("Error updating Univer cell:", univerError);
+            }
+          } else {
+             // Only update chat messages if the generation wasn't triggered by a cell
+            setMessages((prev) => {
+                const cloned = [...prev];
+                const last = cloned.at(-1);
+                cloned[cloned.length - 1] = {
+                    ...last,
+                    content: finalAssistantMessageContent,
+                };
+                return cloned;
+            });
+          }
           break;
 
         case "error":
           setError(e.data.data);
+          // If there was a cell request, update the cell with the error
+          if (e.data.cellCoordinates && globalUniverAPI) {
+            const { workbookId, sheetId, row, col } = e.data.cellCoordinates;
+            try {
+              const workbook = globalUniverAPI.getUniver().getWorkBook(workbookId);
+              if (workbook) {
+                const worksheet = workbook.getSheetBySheetId(sheetId);
+                if (worksheet) {
+                  worksheet.getRange(row, col).setValue(`ERROR: ${e.data.data}`);
+                }
+              }
+            } catch (univerError) {
+              console.error("Error updating Univer cell with error message:", univerError);
+            }
+          }
           break;
       }
     };
@@ -172,18 +236,18 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, [messages, isRunning]); // Added messages and isRunning as dependencies to re-run effect for message updates.
 
   // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
-    if (messages.filter((x) => x.role === "user").length === 0) {
-      // No user messages yet: do nothing.
-      return;
+    // This useEffect is responsible for sending user messages from the chat UI to the worker for generation
+    // It should NOT interfere with messages sent from the spreadsheet.
+    // Check if the last message was a user message AND it doesn't have cell coordinates (meaning it's from chat input)
+    const lastMessage = messages.at(-1);
+    if (!lastMessage || lastMessage.role !== "user" || lastMessage.cellCoordinates) {
+      return; // Do nothing if no user message or it's a cell message
     }
-    if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
-      return;
-    }
+
     setTps(null);
     worker.current.postMessage({ type: "generate", data: messages });
   }, [messages, isRunning]);
