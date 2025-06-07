@@ -23,17 +23,10 @@ export let globalUniverAPI = null;
 
 export const smollmRequestMap = new Map();
 
-// --- NEW: Export a Promise that resolves when Univer is fully ready ---
-let _resolveUniverReady;
-export const univerReadyPromise = new Promise(resolve => {
-    _resolveUniverReady = resolve;
-});
-
-
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
-const { univerAPI, sheet, dispose } = createUniver({
+const { univerAPI } = createUniver({
   locale: LocaleType.EN_US,
   locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
   theme: defaultTheme,
@@ -51,20 +44,6 @@ univerAPI.createUniverSheet({
   rowCount: 100,
   columnCount: 100,
 });
-
-// Now, we resolve the promise AFTER Univer is expected to be ready.
-// Using a setTimeout is a simple way, but ideally, Univer would have an
-// explicit 'onReady' event for plugins/services.
-setTimeout(() => {
-    if (globalUniverAPI?.get.commandService()) {
-        console.log("Univer's command service is ready!");
-        _resolveUniverReady(true); // Resolve the promise
-    } else {
-        console.warn("Univer command service not ready after timeout. Manual refresh might be needed.");
-        _resolveUniverReady(false); // Resolve as failed, or implement more sophisticated retry
-    }
-}, 500); // Give Univer some time to fully initialize
-
 
 /* ------------------------------------------------------------------ */
 /* 3. Register the TAYLORSWIFT() custom formula */
