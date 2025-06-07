@@ -19,13 +19,13 @@ export function setWorkerMessenger(messenger) {
 export let globalUniverAPI = null;
 
 // --- Univer initialization moved into DOMContentLoaded for robustness ---
-document.addEventListener('DOMContentLoaded', async () => { // **ADDED 'async' HERE**
+document.addEventListener('DOMContentLoaded', async () => { // **Ensure this is async**
   console.log('DOM Content Loaded. Initializing Univer...');
 
   // --- Create and append the cell interaction bar ---
   const cellBar = document.createElement('div');
   cellBar.id = 'univer-cell-bar';
-  // Basic styling for the bar (similar to previous App.jsx styling)
+  // Basic styling for the bar
   cellBar.style.cssText = `
     width: 100%;
     background-color: #f3f4f6; /* light gray */
@@ -80,8 +80,8 @@ document.addEventListener('DOMContentLoaded', async () => { // **ADDED 'async' H
     color: white;
     border-radius: 4px;
     margin-right: 8px;
-    cursor: pointer;
-    opacity: 0.5; /* disabled look */
+    cursor: not-allowed; /* disabled look */
+    opacity: 0.5;
     border: none;
   `;
   setCellBtn.disabled = true; // Initially disabled
@@ -94,8 +94,8 @@ document.addEventListener('DOMContentLoaded', async () => { // **ADDED 'async' H
     background-color: #22c55e; /* green */
     color: white;
     border-radius: 4px;
-    cursor: pointer;
-    opacity: 0.5; /* disabled look */
+    cursor: not-allowed; /* disabled look */
+    opacity: 0.5;
     border: none;
   `;
   getCellBtn.disabled = true; // Initially disabled
@@ -105,93 +105,107 @@ document.addEventListener('DOMContentLoaded', async () => { // **ADDED 'async' H
   cellBar.appendChild(setCellBtn);
   cellBar.appendChild(getCellBtn);
 
-  // --- Initialize UniverJS after DOM elements are ready ---
-  // The createUniver call itself is often synchronous for the API object,
-  // but subsequent sheet creation might trigger more readiness steps.
-  const { univerAPI } = createUniver({
+  // --- Initialize UniverJS, destructure both 'univer' (core instance) and 'univerAPI' ---
+  const { univer, univerAPI } = createUniver({ // **Destructure both univer and univerAPI**
     locale: LocaleType.EN_US,
     locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
     theme: defaultTheme,
     presets: [UniverSheetsCorePreset({ container: 'univer' })], // Assumes 'univer' div exists in index.html
   });
 
-  globalUniverAPI = univerAPI;
-  console.log('Univer API initialized and assigned to globalUniverAPI.');
+  globalUniverAPI = univerAPI; // Assign univerAPI to the global variable
 
-  // IMPORTANT: Ensure the sheet is created and fully ready before enabling UI.
-  // Although createUniverSheet is synchronous, there might be internal rendering
-  // or post-creation tasks Univer needs to complete.
-  univerAPI.createUniverSheet({
-    name: 'Hello Univer',
-    rowCount: 100,
-    columnCount: 100,
-  });
-  console.log('Univer Sheet created.');
+  console.log('Univer core instance created. Awaiting bootstrap...');
+  try {
+    // **This is the key API-first step:**
+    // Await the core 'univer' instance's bootstrap method. This method is designed
+    // to complete all internal initialization and plugin loading, making the
+    // entire Univer system ready for interaction.
+    await univer.bootstrap();
+    console.log('Univer has successfully bootstrapped and is fully ready.');
+  } catch (error) {
+    console.error('Failed to bootstrap Univer:', error);
+    alert('Univer spreadsheet failed to load. Please check console for errors and ensure your `index.html` has a `<div id="univer"></div>`.');
+    return; // Stop if bootstrap fails
+  }
 
-  // Attempt to wait for the internal UniverJS engine to be fully ready.
-  // This is a common pattern for libraries that have an "onReady" type event.
-  // UniverJS documentation suggests that after createUniverSheet, it should be ready,
-  // but a small delay or a check for an active sheet can handle subtle race conditions.
-  let checkUniverReadyInterval = setInterval(() => {
-    if (globalUniverAPI && globalUniverAPI.getActiveSheet()) {
-      clearInterval(checkUniverReadyInterval);
-      console.log('UniverJS active sheet is available, proceeding with UI enablement.');
-
-      // Register custom functions *after* univerAPI and sheet are available
-      registerCustomFormulas();
-
-      // --- NEW: Enable UI elements after Univer is fully ready ---
-      cellRefInput.disabled = false;
-      cellValueInput.disabled = false;
-      setCellBtn.disabled = false;
-      getCellBtn.disabled = false;
-      setCellBtn.style.opacity = '1';
-      setCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
-      getCellBtn.style.opacity = '1';
-      getCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
-      console.log('Univer cell interaction UI enabled.');
-
-      // --- Attach Event Listeners to the new UI elements ---
-      setCellBtn.addEventListener('click', () => {
-          // These checks are still good, even if UI is enabled only when ready
-          if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) { // Double check
-              alert("Univer spreadsheet is not fully ready. Please wait a moment.");
-              console.error("Attempted operation when Univer API or active sheet was not available.");
-              return;
-          }
-          try {
-              const cell = new UniverCell(cellRefInput.value);
-              if (cell.setValue(cellValueInput.value)) {
-                  cellValueInput.value = ''; // Clear value after setting
-              } else {
-                  alert("Failed to set cell value. Check console for details.");
-              }
-          } catch (e) {
-              alert("Failed to set cell value (initialization error or invalid reference). Check console for details.");
-              console.error("Error setting cell value via UniverCell:", e);
-          }
-      });
-
-      getCellBtn.addEventListener('click', () => {
-          if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) { // Double check
-              alert("Univer spreadsheet is not fully ready. Please wait a moment.");
-              console.error("Attempted operation when Univer API or active sheet was not available.");
-              return;
-          }
-          try {
-              const cell = new UniverCell(cellRefInput.value);
-              const value = cell.getValue();
-              cellValueInput.value = value !== undefined ? String(value) : "";
-              alert(`Value of ${cellRefInput.value}: ${value !== undefined ? value : "undefined"}`);
-          } catch (e) {
-              alert("Failed to get cell value. Check console for details.");
-              console.error("Error getting cell value via UniverCell:", e);
-          }
-      });
+  // Ensure an active sheet exists after bootstrap.
+  // Although createUniverSheet is called, sometimes explicit activation is needed if
+  // multiple sheets are present or initial setup is complex.
+  let activeSheet = univerAPI.getActiveSheet();
+  if (!activeSheet) {
+    console.log('No active sheet found after bootstrap, creating a default one...');
+    univerAPI.createUniverSheet({
+      name: 'Sheet1', // Give it a default name
+      rowCount: 100,
+      columnCount: 100,
+    });
+    activeSheet = univerAPI.getActiveSheet(); // Try to get it again
+    if (!activeSheet) {
+        console.error("Could not get an active sheet even after creation attempt. Univer might not be fully configured.");
+        alert("Univer spreadsheet is loaded but no active sheet could be found/created. Cell operations might not work.");
+        // We can continue, but operations might fail if no sheet context
+    } else {
+        console.log('Default Univer Sheet created and active.');
     }
-  }, 50); // Check every 50ms
-});
+  } else {
+    console.log('Active Univer Sheet found.');
+  }
 
+
+  // Register custom functions *after* univerAPI and sheet are confirmed ready
+  registerCustomFormulas();
+
+  // --- NEW: Enable UI elements only after Univer is fully ready and bootstrapped ---
+  cellRefInput.disabled = false;
+  cellValueInput.disabled = false;
+  setCellBtn.disabled = false;
+  getCellBtn.disabled = false;
+  setCellBtn.style.opacity = '1';
+  setCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
+  getCellBtn.style.opacity = '1';
+  getCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
+  console.log('Univer cell interaction UI enabled.');
+
+  // --- Attach Event Listeners to the new UI elements ---
+  setCellBtn.addEventListener('click', () => {
+      // These checks are still good as defensive programming, though unlikely to fail now
+      if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) {
+          alert("Univer spreadsheet API is unexpectedly unavailable. Please reload.");
+          console.error("Attempted operation when Univer API or active sheet was not available after bootstrap.");
+          return;
+      }
+      try {
+          const cell = new UniverCell(cellRefInput.value);
+          if (cell.setValue(cellValueInput.value)) {
+              cellValueInput.value = ''; // Clear value after setting
+          } else {
+              // Detailed console error is already inside UniverCell.setValue
+              alert("Failed to set cell value. Check console for details.");
+          }
+      } catch (e) {
+          alert("Failed to set cell value (initialization error or invalid reference). Check console for details.");
+          console.error("Error setting cell value via UniverCell:", e);
+      }
+  });
+
+  getCellBtn.addEventListener('click', () => {
+      if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) {
+          alert("Univer spreadsheet API is unexpectedly unavailable. Please reload.");
+          console.error("Attempted operation when Univer API or active sheet was not available after bootstrap.");
+          return;
+      }
+      try {
+          const cell = new UniverCell(cellRefInput.value);
+          const value = cell.getValue();
+          cellValueInput.value = value !== undefined ? String(value) : "";
+          alert(`Value of ${cellRefInput.value}: ${value !== undefined ? value : "undefined"}`);
+      } catch (e) {
+          alert("Failed to get cell value. Check console for details.");
+          console.error("Error getting cell value via UniverCell:", e);
+      }
+  });
+});
 
 // --- Utility function to parse cell reference (e.g., "A1" to {row: 0, col: 0}) ---
 function parseCellReference(cellReference) {
@@ -214,7 +228,7 @@ function parseCellReference(cellReference) {
 export class UniverCell {
   constructor(cellReference) {
     // This check is crucial for robustness.
-    if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) { // **ADDED activeSheet check here too**
+    if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) {
       throw new Error("Univer API or active sheet is not initialized. Cannot create UniverCell instance.");
     }
     this.cellReference = cellReference.toUpperCase();
@@ -239,7 +253,6 @@ export class UniverCell {
     }
     try {
       const activeSheet = globalUniverAPI.getActiveSheet();
-      // activeSheet check already done in outer if, but keeping it defensive
       const range = activeSheet.getRange(this.row, this.col, 1, 1);
       return range ? range.getValue() : undefined;
     } catch (e) {
@@ -260,7 +273,6 @@ export class UniverCell {
     }
     try {
       const activeSheet = globalUniverAPI.getActiveSheet();
-      // activeSheet check already done in outer if, but keeping it defensive
       activeSheet.setRangeValue(
         { row: this.row, column: this.col, rowCount: 1, columnCount: 1 },
         [[value]]
