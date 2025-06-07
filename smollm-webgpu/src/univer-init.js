@@ -11,16 +11,15 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
-// --- Export a variable to hold the worker messenger function ---
-// This will be called by SMOLLM to send prompts to the worker.
+// --- NEW: Export a variable to hold the worker messenger function ---
 export let workerMessenger = null;
 
-// --- Export a function to set the worker messenger ---
+// --- NEW: Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
+// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
 /* ------------------------------------------------------------------ */
@@ -33,7 +32,7 @@ const { univerAPI } = createUniver({
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
-// --- Assign univerAPI to the global export ---
+// --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
 
 /* ------------------------------------------------------------------ */
@@ -83,52 +82,25 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 /* 4. Register the SMOLLM() custom formula */
 /* ------------------------------------------------------------------ */
-
-// --- NEW: An array to hold SMOLLM responses, for chat history or optional future use
-// We will still populate this, but the cell update will be direct.
-export const SMOLLM_RESPONSES = [];
-
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  // Univer's custom functions can receive an ICustomFunctionContext
-  // which includes information about the cell where the formula is located.
-  async function (context, prompt) { // Note: 'this' context needs to be available
-    const cellInfo = context.rangeList[0]; // Get information about the cell triggering the formula
-    const sheetId = cellInfo.sheetId;
-    const row = cellInfo.row;
-    const col = cellInfo.column;
-    const workbookId = univerAPI.getActiveWorkbook().getUnitId(); // Get current workbook ID
-
-    // Ensure prompt is a string. If it comes as a range, extract its value.
-    let actualPrompt = prompt;
-    if (Array.isArray(prompt) && prompt.length > 0 && prompt[0].length > 0) {
-        actualPrompt = prompt[0][0]; // Extract value from a range array
-    }
-
+  async (prompt) => {
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
-      // Directly update the cell with an error if AI is not ready
-      if (globalUniverAPI) {
-        globalUniverAPI.getUniver().getWorkBook(workbookId)
-            .getSheetBySheetId(sheetId)
-            .getRange(row, col)
-            .setValue("ERROR: AI not ready");
-      }
       return "ERROR: AI not ready";
     }
 
-    // Send the prompt to the worker, along with the cell address to update later.
-    // The worker.js doesn't need to know the cell, but App.jsx does.
+    // Send the prompt to the worker.
+    // We are deliberately formatting this to look like a chat message
+    // because the worker.js cannot be modified to handle a new type.
     workerMessenger({
       type: "generate",
-      data: [{ role: "user", content: actualPrompt }],
-      // --- NEW: Pass cell coordinates for App.jsx to use for direct update ---
-      cellCoordinates: { workbookId, sheetId, row, col, prompt: actualPrompt }
+      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
     });
 
-    // Immediately return a message indicating generation is in progress.
-    // The cell will display this temporarily until the AI response arrives and updates it.
-    return "Generating AI response...";
+    // Return a message indicating generation is in progress.
+    // The actual AI response will appear in the chat UI.
+    return "Generating AI response in chat...";
   },
   {
     description: 'customFunction.SMOLLM.description',
@@ -136,7 +108,7 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in this cell.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
           },
         },
       },
