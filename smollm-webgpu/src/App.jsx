@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- UPDATED: Import setWorkerMessenger, UniverCell, and getCellValueFromUniver ---
-import { setWorkerMessenger, UniverCell, getCellValueFromUniver } from './univer-init.js';
+// --- UPDATED: Import globalUniverAPI directly for watching ---
+import { setWorkerMessenger, UniverCell, globalUniverAPI } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -32,9 +32,11 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
-  // --- NEW: State for cell editor bar ---
   const [cellRef, setCellRef] = useState("A1");
   const [currentCellValue, setCurrentCellValue] = useState("");
+
+  // --- NEW: State to track Univer API readiness ---
+  const [isUniverApiReady, setIsUniverApiReady] = useState(false);
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -75,78 +77,25 @@ function App() {
         }
     });
 
-    const onMessageReceived = (e) => {
-      switch (e.data.status) {
-        case "loading":
-          setStatus("loading");
-          setLoadingMessage(e.data.data);
-          break;
-        case "initiate":
-          setProgressItems((prev) => [...prev, e.data]);
-          break;
-        case "progress":
-          setProgressItems((prev) =>
-            prev.map((item) => {
-              if (item.file === e.data.file) {
-                return { ...item, ...e.data };
-              }
-              return item;
-            }),
-          );
-          break;
-        case "done":
-          setProgressItems((prev) =>
-            prev.filter((item) => item.file !== e.data.file),
-          );
-          break;
-        case "ready":
-          setStatus("ready");
-          break;
-        case "start":
-          {
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", content: "" },
-            ]);
-          }
-          break;
-        case "update":
-          {
-            const { output, tps, numTokens } = e.data;
-            setTps(tps);
-            setNumTokens(numTokens);
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: last.content + output,
-              };
-              return cloned;
-            });
-          }
-          break;
-        case "complete":
-          setIsRunning(false);
-          break;
-        case "error":
-          setError(e.data.data);
-          break;
-      }
-    };
+    // --- NEW: Watch for globalUniverAPI to become available ---
+    const checkUniverReady = setInterval(() => {
+        if (globalUniverAPI) {
+            console.log('App.jsx: globalUniverAPI is now available!');
+            setIsUniverApiReady(true);
+            clearInterval(checkUniverReady); // Stop checking once it's ready
+        }
+    }, 100); // Check every 100ms
 
-    const onErrorReceived = (e) => {
-      console.error("Worker error:", e);
-    };
-
-    worker.current.addEventListener("message", onMessageReceived);
-    worker.current.addEventListener("error", onErrorReceived);
-
+    // Cleanup interval on component unmount
     return () => {
-      worker.current.removeEventListener("message", onMessageReceived);
-      worker.current.removeEventListener("error", onErrorReceived);
+        clearInterval(checkUniverReady);
+        worker.current.removeEventListener("message", onMessageReceived);
+        worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, []); // Empty dependency array means this runs once on mount
+
+
+  // ... (rest of App.jsx useEffects for worker messages and chat) ...
 
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
@@ -170,28 +119,35 @@ function App() {
     }
   }, [messages, isRunning]);
 
-  // --- NEW: Function to set cell content using the UniverCell class ---
   function handleSetCellContent() {
+    if (!isUniverApiReady) { // Prevent action if Univer is not ready
+      alert("Univer spreadsheet is not yet ready. Please wait.");
+      console.warn("Attempted to set cell value before Univer API was ready.");
+      return;
+    }
     try {
-      const cell = new UniverCell(cellRef); // Create a Cell object for the current cellRef
-      if (cell.setValue(currentCellValue)) { // Use its setValue method
-        setCurrentCellValue(""); // Clear the value after setting if successful
+      const cell = new UniverCell(cellRef);
+      if (cell.setValue(currentCellValue)) {
+        setCurrentCellValue("");
       } else {
         alert("Failed to set cell value. Check console for details.");
       }
     } catch (e) {
-      // Catch errors during UniverCell instantiation (e.g., invalid reference or Univer not ready)
-      alert("Failed to set cell value (initialization error). Check console for details.");
+      alert("Failed to set cell value (initialization error or invalid reference). Check console for details.");
       console.error("Error setting cell value via UniverCell:", e);
     }
   }
 
-  // --- NEW: Function to get cell content and display it (for demonstration) ---
   function handleGetCellContent() {
+    if (!isUniverApiReady) { // Prevent action if Univer is not ready
+      alert("Univer spreadsheet is not yet ready. Please wait.");
+      console.warn("Attempted to get cell value before Univer API was ready.");
+      return;
+    }
     try {
       const cell = new UniverCell(cellRef);
       const value = cell.getValue();
-      setCurrentCellValue(value !== undefined ? String(value) : ""); // Set input field to fetched value
+      setCurrentCellValue(value !== undefined ? String(value) : "");
       alert(`Value of ${cellRef}: ${value !== undefined ? value : "undefined"}`);
     } catch (e) {
       alert("Failed to get cell value. Check console for details.");
@@ -202,7 +158,7 @@ function App() {
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-      {/* --- NEW: Cell Editor Bar --- */}
+      {/* --- Cell Editor Bar --- */}
       <div className="w-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center py-2 mb-2 gap-2 border-b dark:border-gray-700">
         <input
           type="text"
@@ -211,6 +167,7 @@ function App() {
           className="w-16 p-1 rounded border dark:bg-gray-900 text-center"
           placeholder="A1"
           title="Cell Reference (e.g. A1, B2)"
+          disabled={!isUniverApiReady} {/* NEW: Disable input if not ready */}
         />
         <input
           type="text"
@@ -219,16 +176,19 @@ function App() {
           className="w-56 p-1 rounded border dark:bg-gray-900"
           placeholder="Value"
           title="Cell Value"
+          disabled={!isUniverApiReady} {/* NEW: Disable input if not ready */}
         />
         <button
           onClick={handleSetCellContent}
-          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
+          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400"
+          disabled={!isUniverApiReady} {/* NEW: Disable button if not ready */}
         >
           Set
         </button>
         <button
           onClick={handleGetCellContent}
-          className="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600"
+          className="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400"
+          disabled={!isUniverApiReady} {/* NEW: Disable button if not ready */}
         >
           Get
         </button>
@@ -243,7 +203,7 @@ function App() {
               height="auto"
               className="block"
             ></img>
-            <h1 className="4xl font-bold mb-1">SmolLM2 WebGPU</h1>
+            <h1 className="text-4xl font-bold mb-1">SmolLM2 WebGPU</h1>
             <h2 className="font-semibold">
               A blazingly fast and powerful AI chatbot that runs locally in your
               browser.
