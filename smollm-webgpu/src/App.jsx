@@ -150,7 +150,7 @@ function App() {
       ?.getActiveWorkbook()
       ?.getActiveSheet()
       ?.getRange("A3")
-      .setValue(last.content + output);
+      .setValue(output);
   }
   break;
 
