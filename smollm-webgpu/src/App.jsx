@@ -5,8 +5,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- UPDATED: Import globalUniverAPI directly for watching ---
-import { setWorkerMessenger, UniverCell, globalUniverAPI } from './univer-init.js';
+// --- NEW: Import setWorkerMessenger from univer-init.js ---
+import { setWorkerMessenger } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -17,26 +17,24 @@ const EXAMPLES = [
 ];
 
 function App() {
+  // Create a reference to the worker object.
   const worker = useRef(null);
+
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
 
+  // Model loading and progress
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
 
+  // Inputs and outputs
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
-
-  const [cellRef, setCellRef] = useState("A1");
-  const [currentCellValue, setCurrentCellValue] = useState("");
-
-  // --- NEW: State to track Univer API readiness ---
-  const [isUniverApiReady, setIsUniverApiReady] = useState(false);
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -46,6 +44,8 @@ function App() {
   }
 
   function onInterrupt() {
+    // NOTE: We do not set isRunning to false here because the worker
+    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
   }
 
@@ -55,20 +55,25 @@ function App() {
 
   function resizeInput() {
     if (!textareaRef.current) return;
+
     const target = textareaRef.current;
     target.style.height = "auto";
     const newHeight = Math.min(Math.max(target.scrollHeight, 24), 200);
     target.style.height = `${newHeight}px`;
   }
 
+  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
+    // Create the worker if it does not yet exist.
     if (!worker.current) {
       worker.current = new Worker(new URL("./worker.js", import.meta.url), {
         type: "module",
       });
-      worker.current.postMessage({ type: "check" });
+      worker.current.postMessage({ type: "check" }); // Do a feature check
     }
 
+    // --- NEW: Provide the worker messenger to univer-init.js ---
+    // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
         if (worker.current) {
             worker.current.postMessage(message);
@@ -77,31 +82,106 @@ function App() {
         }
     });
 
-    // --- NEW: Watch for globalUniverAPI to become available ---
-    const checkUniverReady = setInterval(() => {
-        if (globalUniverAPI) {
-            console.log('App.jsx: globalUniverAPI is now available!');
-            setIsUniverApiReady(true);
-            clearInterval(checkUniverReady); // Stop checking once it's ready
-        }
-    }, 100); // Check every 100ms
+    // Create a callback function for messages from the worker thread.
+    const onMessageReceived = (e) => {
+      switch (e.data.status) {
+        case "loading":
+          // Model file start load: add a new progress item to the list.
+          setStatus("loading");
+          setLoadingMessage(e.data.data);
+          break;
 
-    // Cleanup interval on component unmount
-    return () => {
-        clearInterval(checkUniverReady);
-        worker.current.removeEventListener("message", onMessageReceived);
-        worker.current.removeEventListener("error", onErrorReceived);
+        case "initiate":
+          setProgressItems((prev) => [...prev, e.data]);
+          break;
+
+        case "progress":
+          // Model file progress: update one of the progress items.
+          setProgressItems((prev) =>
+            prev.map((item) => {
+              if (item.file === e.data.file) {
+                return { ...item, ...e.data };
+              }
+              return item;
+            }),
+          );
+          break;
+
+        case "done":
+          // Model file loaded: remove the progress item from the list.
+          setProgressItems((prev) =>
+            prev.filter((item) => item.file !== e.data.file),
+          );
+          break;
+
+        case "ready":
+          // Pipeline ready: the worker is ready to accept messages.
+          setStatus("ready");
+          break;
+
+        case "start":
+          {
+            // Start generation
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: "" },
+            ]);
+          }
+          break;
+
+        case "update":
+          {
+            // Generation update: update the output text.
+            // Parse messages
+            const { output, tps, numTokens } = e.data;
+            setTps(tps);
+            setNumTokens(numTokens);
+            setMessages((prev) => {
+              const cloned = [...prev];
+              const last = cloned.at(-1);
+              cloned[cloned.length - 1] = {
+                ...last,
+                content: last.content + output,
+              };
+              return cloned;
+            });
+          }
+          break;
+
+        case "complete":
+          // Generation complete: re-enable the "Generate" button
+          setIsRunning(false);
+          break;
+
+        case "error":
+          setError(e.data.data);
+          break;
+      }
     };
-  }, []); // Empty dependency array means this runs once on mount
 
+    const onErrorReceived = (e) => {
+      console.error("Worker error:", e);
+    };
 
-  // ... (rest of App.jsx useEffects for worker messages and chat) ...
+    // Attach the callback function as an event listener.
+    worker.current.addEventListener("message", onMessageReceived);
+    worker.current.addEventListener("error", onErrorReceived);
 
+    // Define a cleanup function for when the component is unmounted.
+    return () => {
+      worker.current.removeEventListener("message", onMessageReceived);
+      worker.current.removeEventListener("error", onErrorReceived);
+    };
+  }, []);
+
+  // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
+      // No user messages yet: do nothing.
       return;
     }
     if (messages.at(-1).role === "assistant") {
+      // Do not update if the last message is from the assistant
       return;
     }
     setTps(null);
@@ -119,81 +199,8 @@ function App() {
     }
   }, [messages, isRunning]);
 
-  function handleSetCellContent() {
-    if (!isUniverApiReady) { // Prevent action if Univer is not ready
-      alert("Univer spreadsheet is not yet ready. Please wait.");
-      console.warn("Attempted to set cell value before Univer API was ready.");
-      return;
-    }
-    try {
-      const cell = new UniverCell(cellRef);
-      if (cell.setValue(currentCellValue)) {
-        setCurrentCellValue("");
-      } else {
-        alert("Failed to set cell value. Check console for details.");
-      }
-    } catch (e) {
-      alert("Failed to set cell value (initialization error or invalid reference). Check console for details.");
-      console.error("Error setting cell value via UniverCell:", e);
-    }
-  }
-
-  function handleGetCellContent() {
-    if (!isUniverApiReady) { // Prevent action if Univer is not ready
-      alert("Univer spreadsheet is not yet ready. Please wait.");
-      console.warn("Attempted to get cell value before Univer API was ready.");
-      return;
-    }
-    try {
-      const cell = new UniverCell(cellRef);
-      const value = cell.getValue();
-      setCurrentCellValue(value !== undefined ? String(value) : "");
-      alert(`Value of ${cellRef}: ${value !== undefined ? value : "undefined"}`);
-    } catch (e) {
-      alert("Failed to get cell value. Check console for details.");
-      console.error("Error getting cell value via UniverCell:", e);
-    }
-  }
-
-
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
-      {/* --- Cell Editor Bar --- */}
-      <div className="w-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center py-2 mb-2 gap-2 border-b dark:border-gray-700">
-        <input
-          type="text"
-          value={cellRef}
-          onChange={e => setCellRef(e.target.value)}
-          className="w-16 p-1 rounded border dark:bg-gray-900 text-center"
-          placeholder="A1"
-          title="Cell Reference (e.g. A1, B2)"
-          disabled={!isUniverApiReady} {/* NEW: Disable input if not ready */}
-        />
-        <input
-          type="text"
-          value={currentCellValue}
-          onChange={e => setCurrentCellValue(e.target.value)}
-          className="w-56 p-1 rounded border dark:bg-gray-900"
-          placeholder="Value"
-          title="Cell Value"
-          disabled={!isUniverApiReady} {/* NEW: Disable input if not ready */}
-        />
-        <button
-          onClick={handleSetCellContent}
-          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400"
-          disabled={!isUniverApiReady} {/* NEW: Disable button if not ready */}
-        >
-          Set
-        </button>
-        <button
-          onClick={handleGetCellContent}
-          className="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400"
-          disabled={!isUniverApiReady} {/* NEW: Disable button if not ready */}
-        >
-          Get
-        </button>
-      </div>
-
       {status === null && messages.length === 0 && (
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
@@ -370,13 +377,13 @@ function App() {
         ) : input.length > 0 ? (
           <div className="cursor-pointer" onClick={() => onEnter(input)}>
             <ArrowRightIcon
-              className="h-8 w-8 p-1 bg-gray-800 dark:bg-gray-100 text-white dark:text-black rounded-md absolute right-3 bottom-3"
+              className={`h-8 w-8 p-1 bg-gray-800 dark:bg-gray-100 text-white dark:text-black rounded-md absolute right-3 bottom-3`}
             />
           </div>
         ) : (
           <div>
             <ArrowRightIcon
-              className="h-8 w-8 p-1 bg-gray-200 dark:bg-gray-600 text-gray-50 dark:text-gray-800 rounded-md absolute right-3 bottom-3"
+              className={`h-8 w-8 p-1 bg-gray-200 dark:bg-gray-600 text-gray-50 dark:text-gray-800 rounded-md absolute right-3 bottom-3`}
             />
           </div>
         )}
