@@ -16,9 +16,10 @@ export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
+// globalUniverAPI is still exported as a simple 'let' variable
 export let globalUniverAPI = null;
 
-// --- NEW: Wrap Univer initialization in DOMContentLoaded for robustness ---
+// Univer initialization remains within DOMContentLoaded
 document.addEventListener('DOMContentLoaded', () => {
   console.log('DOM Content Loaded. Initializing Univer...');
   const { univerAPI } = createUniver({
@@ -28,8 +29,8 @@ document.addEventListener('DOMContentLoaded', () => {
     presets: [UniverSheetsCorePreset({ container: 'univer' })],
   });
 
-  globalUniverAPI = univerAPI;
-  console.log('Univer API initialized and assigned to globalUniverAPI:', globalUniverAPI ? 'YES' : 'NO');
+  globalUniverAPI = univerAPI; // This is where globalUniverAPI gets its value
+  console.log('Univer API initialized and assigned to globalUniverAPI.');
 
   univerAPI.createUniverSheet({
     name: 'Hello Univer',
@@ -38,8 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   console.log('Univer Sheet created.');
 
-  // IMPORTANT: Register custom functions *after* univerAPI is available
-  // This is a common pattern to ensure the API exists before trying to use it.
+  // Register custom functions *after* univerAPI is available
   registerCustomFormulas();
 });
 
@@ -60,12 +60,12 @@ function parseCellReference(cellReference) {
   return { row, col };
 }
 
-// --- NEW: UniverCell Class for Object-Oriented Cell Interaction ---
+// --- UniverCell Class for Object-Oriented Cell Interaction ---
 export class UniverCell {
   constructor(cellReference) {
+    // This check is still crucial: UniverCell is instantiated from App.jsx,
+    // and globalUniverAPI might not be set yet.
     if (!globalUniverAPI) {
-      // This check is crucial for robustness. The constructor should ideally not be called
-      // before globalUniverAPI is ready, but it's a good safeguard.
       throw new Error("Univer API is not initialized. Cannot create UniverCell instance.");
     }
     this.cellReference = cellReference.toUpperCase();
@@ -84,8 +84,8 @@ export class UniverCell {
    * @returns {any | undefined} The cell's value, or undefined if an error occurs.
    */
   getValue() {
-    if (!globalUnverAPI) {
-      console.error("Univer API not available to get cell value.");
+    if (!globalUniverAPI) { // Defensive check
+      console.error("Univer API not available to get cell value (internal check).");
       return undefined;
     }
     try {
@@ -94,9 +94,8 @@ export class UniverCell {
         console.warn("No active sheet found to get cell value from. Ensure a sheet is created and active.");
         return undefined;
       }
-      // UniverJS getRange() returns a Range object, then getValue()
-      const range = activeSheet.getRange(this.row, this.col, 1, 1); // row, col, rowCount, colCount
-      return range ? range.getValue() : undefined; // Return undefined if range is somehow null
+      const range = activeSheet.getRange(this.row, this.col, 1, 1);
+      return range ? range.getValue() : undefined;
     } catch (e) {
       console.error(`Error getting value for cell ${this.cellReference}:`, e);
       return undefined;
@@ -109,8 +108,8 @@ export class UniverCell {
    * @returns {boolean} True if successful, false otherwise.
    */
   setValue(value) {
-    if (!globalUniverAPI) {
-      console.error("Univer API not available to set cell value.");
+    if (!globalUniverAPI) { // Defensive check
+      console.error("Univer API not available to set cell value (internal check).");
       return false;
     }
     try {
@@ -130,44 +129,25 @@ export class UniverCell {
       return false;
     }
   }
-
-  // You could add more methods here, e.g.:
-  // getFormula()
-  // setFormula(formula)
-  // getStyle()
-  // setStyle(style)
-  // clear()
-  // on(eventName, callback) // For custom events related to this cell (more advanced)
 }
 
-// --- Backward-compatible helper functions, now using UniverCell ---
-/**
- * Sets the value of a cell in the active sheet using a cell reference.
- * @param {string} cellReference The cell reference (e.g., "A1", "B5").
- * @param {any} value The value to set in the cell.
- * @returns {boolean} True if successful, false otherwise.
- */
+// --- Backward-compatible helper functions, now using UniverCell internally ---
 export function setCellValueInUniver(cellReference, value) {
   try {
     const cell = new UniverCell(cellReference);
     return cell.setValue(value);
   } catch (e) {
-    console.error(`Failed to set cell value for "${cellReference}" via helper:`, e.message);
+    console.error(`Failed to set cell value for "${cellReference}" via helper: ${e.message}`);
     return false;
   }
 }
 
-/**
- * Gets the value of a cell in the active sheet using a cell reference.
- * @param {string} cellReference The cell reference (e.g., "A1", "B5").
- * @returns {any | undefined} The cell's value, or undefined if an error occurs.
- */
 export function getCellValueFromUniver(cellReference) {
   try {
     const cell = new UniverCell(cellReference);
     return cell.getValue();
   } catch (e) {
-    console.error(`Failed to get cell value for "${cellReference}" via helper:`, e.message);
+    console.error(`Failed to get cell value for "${cellReference}" via helper: ${e.message}`);
     return undefined;
   }
 }
