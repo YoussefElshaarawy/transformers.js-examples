@@ -129,32 +129,30 @@ function App() {
           }
           break;
 
-      case "update":
-          {
-            const { output, tps, numTokens } = e.data;
-            setTps(tps);
-            setNumTokens(numTokens);
+       case "update":
+  {
+    const { output, tps, numTokens } = e.data;
+    setTps(tps);
+    setNumTokens(numTokens);
 
-            let fullGeneratedText = "";
+    setMessages((prev) => {
+      const cloned = [...prev];
+      const last   = cloned.at(-1);
+      cloned[cloned.length - 1] = {
+        ...last,
+        content: last.content + output,
+      };
+      return cloned;
+    });
 
-            setMessages((prev) => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              fullGeneratedText = last.content + output;
-              cloned[cloned.length - 1] = {
-                ...last,
-                content: fullGeneratedText,
-              };
-              return cloned;
-            });
-
-            globalUniverAPI
-              ?.getActiveWorkbook()
-              ?.getActiveSheet()
-              ?.getRange("A3")
-              .setValue(fullGeneratedText);
-          }
-          break;
+    // ⬇ side-effect: write to A3 each update
+    globalUniverAPI
+      ?.getActiveWorkbook()
+      ?.getActiveSheet()
+      ?.getRange("A3")
+      .setValue(last.content + output);
+  }
+  break;
 
       }
     };
