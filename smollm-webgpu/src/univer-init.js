@@ -1,5 +1,3 @@
-// univer-init.js
-
 import {
   createUniver,
   defaultTheme,
@@ -13,22 +11,16 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
+// --- NEW: Export a variable to hold the worker messenger function ---
 export let workerMessenger = null;
 
+// --- NEW: Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
+// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
-
-export const smollmRequestMap = new Map();
-
-// --- NEW: This promise will be resolved internally by Univer when it's ready ---
-let _resolveUniverReady;
-export const univerReadyPromise = new Promise(resolve => {
-  _resolveUniverReady = resolve; // Store the resolve function
-});
-
 
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
@@ -37,23 +29,11 @@ const { univerAPI } = createUniver({
   locale: LocaleType.EN_US,
   locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
   theme: defaultTheme,
-  presets: [
-    UniverSheetsCorePreset({
-      container: 'univer',
-      // --- IMPORTANT: This is the onReady callback for the core sheet preset ---
-      onReady: (univerInstance) => {
-        console.log("UniverSheetsCorePreset reports itself ready!");
-        // Resolve the promise, signaling that Univer is fully initialized and its services are available
-        if (_resolveUniverReady) {
-          _resolveUniverReady(true);
-        }
-      }
-    })
-  ],
+  presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
+// --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
-console.log("Univer initialized, globalUniverAPI set:", globalUniverAPI);
 
 /* ------------------------------------------------------------------ */
 /* 2. Create a visible 100 × 100 sheet */
@@ -104,31 +84,23 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  async function(prompt) {
-    const { row, col, sheetId } = this;
-
-    console.log("SMOLLM function called with:", { prompt, row, col, sheetId });
-
-    const stringPrompt = String(prompt);
-
+  async (prompt) => {
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
-      return { v: "ERROR: AI not ready" };
+      return "ERROR: AI not ready";
     }
 
-    const smollmRequestId = `smollm-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    smollmRequestMap.set(smollmRequestId, { row, col, sheetId });
-    console.log("SMOLLM: Registered request ID", smollmRequestId, "for cell", { row, col, sheetId });
-
+    // Send the prompt to the worker.
+    // We are deliberately formatting this to look like a chat message
+    // because the worker.js cannot be modified to handle a new type.
     workerMessenger({
       type: "generate",
-      smollmRequestId: smollmRequestId,
-      data: [{ role: "user", content: stringPrompt }],
-      originalPromptForSmollm: stringPrompt
+      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
     });
-    console.log("SMOLLM: Message sent to worker for ID", smollmRequestId);
 
-    return { v: "Generating AI response..." };
+    // Return a message indicating generation is in progress.
+    // The actual AI response will appear in the chat UI.
+    return "Generating AI response in chat...";
   },
   {
     description: 'customFunction.SMOLLM.description',
@@ -136,7 +108,7 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat, and updates the cell.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
           },
         },
       },
