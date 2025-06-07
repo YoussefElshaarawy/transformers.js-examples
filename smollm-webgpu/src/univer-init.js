@@ -18,8 +18,26 @@ export function setWorkerMessenger(messenger) {
 
 export let globalUniverAPI = null;
 
+// --- Utility function to parse cell reference (e.g., "A1" to {row: 0, col: 0}) ---
+function parseCellReferenceDirect(cellReference) {
+  const match = cellReference.match(/^([A-Z]+)([0-9]+)$/i);
+  if (!match) {
+    throw new Error(`Invalid cell reference format: "${cellReference}". Expected "A1".`);
+  }
+  const colLetters = match[1].toUpperCase();
+  let col = 0;
+  for (let i = 0; i < colLetters.length; i++) {
+    col = col * 26 + (colLetters.charCodeAt(i) - 65 + 1);
+  }
+  col = col - 1; // Convert to 0-based index
+
+  const row = parseInt(match[2], 10) - 1; // Convert to 0-based index
+  return { row, col };
+}
+
+
 // --- Univer initialization moved into DOMContentLoaded for robustness ---
-document.addEventListener('DOMContentLoaded', async () => { // **Ensure this is async**
+document.addEventListener('DOMContentLoaded', async () => {
   console.log('DOM Content Loaded. Initializing Univer...');
 
   // --- Create and append the cell interaction bar ---
@@ -106,7 +124,7 @@ document.addEventListener('DOMContentLoaded', async () => { // **Ensure this is 
   cellBar.appendChild(getCellBtn);
 
   // --- Initialize UniverJS, destructure both 'univer' (core instance) and 'univerAPI' ---
-  const { univer, univerAPI } = createUniver({ // **Destructure both univer and univerAPI**
+  const { univer, univerAPI } = createUniver({
     locale: LocaleType.EN_US,
     locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
     theme: defaultTheme,
@@ -117,10 +135,7 @@ document.addEventListener('DOMContentLoaded', async () => { // **Ensure this is 
 
   console.log('Univer core instance created. Awaiting bootstrap...');
   try {
-    // **This is the key API-first step:**
-    // Await the core 'univer' instance's bootstrap method. This method is designed
-    // to complete all internal initialization and plugin loading, making the
-    // entire Univer system ready for interaction.
+    // Await the core 'univer' instance's bootstrap method for full readiness.
     await univer.bootstrap();
     console.log('Univer has successfully bootstrapped and is fully ready.');
   } catch (error) {
@@ -130,8 +145,6 @@ document.addEventListener('DOMContentLoaded', async () => { // **Ensure this is 
   }
 
   // Ensure an active sheet exists after bootstrap.
-  // Although createUniverSheet is called, sometimes explicit activation is needed if
-  // multiple sheets are present or initial setup is complex.
   let activeSheet = univerAPI.getActiveSheet();
   if (!activeSheet) {
     console.log('No active sheet found after bootstrap, creating a default one...');
@@ -162,150 +175,59 @@ document.addEventListener('DOMContentLoaded', async () => { // **Ensure this is 
   setCellBtn.disabled = false;
   getCellBtn.disabled = false;
   setCellBtn.style.opacity = '1';
-  setCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
+  setCellBtn.style.cursor = 'pointer';
   getCellBtn.style.opacity = '1';
-  getCellBtn.style.cursor = 'pointer'; // Ensure cursor changes on hover
+  getCellBtn.style.cursor = 'pointer';
   console.log('Univer cell interaction UI enabled.');
 
-  // --- Attach Event Listeners to the new UI elements ---
+  // --- Attach Event Listeners to the new UI elements using direct API calls ---
   setCellBtn.addEventListener('click', () => {
-      // These checks are still good as defensive programming, though unlikely to fail now
+      const cellReference = cellRefInput.value;
+      const value = cellValueInput.value;
       if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) {
           alert("Univer spreadsheet API is unexpectedly unavailable. Please reload.");
           console.error("Attempted operation when Univer API or active sheet was not available after bootstrap.");
           return;
       }
       try {
-          const cell = new UniverCell(cellRefInput.value);
-          if (cell.setValue(cellValueInput.value)) {
-              cellValueInput.value = ''; // Clear value after setting
-          } else {
-              // Detailed console error is already inside UniverCell.setValue
-              alert("Failed to set cell value. Check console for details.");
-          }
+          const { row, col } = parseCellReferenceDirect(cellReference);
+          globalUniverAPI.getActiveSheet().setRangeValue(
+              { row, column: col, rowCount: 1, columnCount: 1 },
+              [[value]]
+          );
+          console.log(`Successfully set cell ${cellReference} to "${value}".`);
+          cellValueInput.value = ''; // Clear value after setting
       } catch (e) {
-          alert("Failed to set cell value (initialization error or invalid reference). Check console for details.");
-          console.error("Error setting cell value via UniverCell:", e);
+          alert("Failed to set cell value. Check console for details.");
+          console.error(`Error setting value for cell ${cellReference}:`, e);
       }
   });
 
   getCellBtn.addEventListener('click', () => {
+      const cellReference = cellRefInput.value;
       if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) {
           alert("Univer spreadsheet API is unexpectedly unavailable. Please reload.");
           console.error("Attempted operation when Univer API or active sheet was not available after bootstrap.");
           return;
       }
       try {
-          const cell = new UniverCell(cellRefInput.value);
-          const value = cell.getValue();
+          const { row, col } = parseCellReferenceDirect(cellReference);
+          const value = globalUniverAPI.getActiveSheet().getRange(row, col, 1, 1).getValue();
           cellValueInput.value = value !== undefined ? String(value) : "";
-          alert(`Value of ${cellRefInput.value}: ${value !== undefined ? value : "undefined"}`);
+          alert(`Value of ${cellReference}: ${value !== undefined ? value : "undefined"}`);
       } catch (e) {
           alert("Failed to get cell value. Check console for details.");
-          console.error("Error getting cell value via UniverCell:", e);
+          console.error(`Error getting value for cell ${cellReference}:`, e);
       }
   });
 });
 
-// --- Utility function to parse cell reference (e.g., "A1" to {row: 0, col: 0}) ---
-function parseCellReference(cellReference) {
-  const match = cellReference.match(/^([A-Z]+)([0-9]+)$/i);
-  if (!match) {
-    throw new Error(`Invalid cell reference format: "${cellReference}". Expected format like "A1".`);
-  }
-  const colLetters = match[1].toUpperCase();
-  let col = 0;
-  for (let i = 0; i < colLetters.length; i++) {
-    col = col * 26 + (colLetters.charCodeAt(i) - 65 + 1);
-  }
-  col = col - 1; // Convert to 0-based index
 
-  const row = parseInt(match[2], 10) - 1; // Convert to 0-based index
-  return { row, col };
-}
+// Removed UniverCell class and helper functions to simplify for direct access
+// export class UniverCell { ... }
+// export function setCellValueInUniver(cellReference, value) { ... }
+// export function getCellValueFromUniver(cellReference) { ... }
 
-// --- UniverCell Class for Object-Oriented Cell Interaction ---
-export class UniverCell {
-  constructor(cellReference) {
-    // This check is crucial for robustness.
-    if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) {
-      throw new Error("Univer API or active sheet is not initialized. Cannot create UniverCell instance.");
-    }
-    this.cellReference = cellReference.toUpperCase();
-    try {
-      const { row, col } = parseCellReference(this.cellReference);
-      this.row = row;
-      this.col = col;
-    } catch (error) {
-      console.error(`Error parsing cell reference for UniverCell "${this.cellReference}": ${error.message}`);
-      throw error; // Re-throw to indicate a bad reference
-    }
-  }
-
-  /**
-   * Gets the value of the cell.
-   * @returns {any | undefined} The cell's value, or undefined if an error occurs.
-   */
-  getValue() {
-    if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) { // Defensive check
-      console.error("Univer API or active sheet not available to get cell value (internal check).");
-      return undefined;
-    }
-    try {
-      const activeSheet = globalUniverAPI.getActiveSheet();
-      const range = activeSheet.getRange(this.row, this.col, 1, 1);
-      return range ? range.getValue() : undefined;
-    } catch (e) {
-      console.error(`Error getting value for cell ${this.cellReference}:`, e);
-      return undefined;
-    }
-  }
-
-  /**
-   * Sets the value of the cell.
-   * @param {any} value The value to set in the cell.
-   * @returns {boolean} True if successful, false otherwise.
-   */
-  setValue(value) {
-    if (!globalUniverAPI || !globalUniverAPI.getActiveSheet()) { // Defensive check
-      console.error("Univer API or active sheet not available to set cell value (internal check).");
-      return false;
-    }
-    try {
-      const activeSheet = globalUniverAPI.getActiveSheet();
-      activeSheet.setRangeValue(
-        { row: this.row, column: this.col, rowCount: 1, columnCount: 1 },
-        [[value]]
-      );
-      console.log(`Successfully set cell ${this.cellReference} to "${value}".`);
-      return true;
-    } catch (e) {
-      console.error(`Error setting value for cell ${this.cellReference}:`, e);
-      return false;
-    }
-  }
-}
-
-// --- Backward-compatible helper functions, now using UniverCell internally ---
-export function setCellValueInUniver(cellReference, value) {
-  try {
-    const cell = new UniverCell(cellReference);
-    return cell.setValue(value);
-  } catch (e) {
-    console.error(`Failed to set cell value for "${cellReference}" via helper: ${e.message}`);
-    return false;
-  }
-}
-
-export function getCellValueFromUniver(cellReference) {
-  try {
-    const cell = new UniverCell(cellReference);
-    return cell.getValue();
-  } catch (e) {
-    console.error(`Failed to get cell value for "${cellReference}" via helper: ${e.message}`);
-    return undefined;
-  }
-}
 
 // --- Moved formula registration into a function to be called after API is ready ---
 function registerCustomFormulas() {
