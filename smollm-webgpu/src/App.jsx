@@ -38,6 +38,9 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
+  // --- NEW: State to store the active SMOLLM cell location ---
+  const [activeSmollmCell, setActiveSmollmCell] = useState(null); // e.g., { row: 0, col: 0, sheetId: 'sheet1' }
+
   // --- NEW: Ref to accumulate output for spreadsheet cells ---
   const smollmCellOutputAccumulator = useRef(new Map());
 
@@ -126,11 +129,18 @@ function App() {
 
         case "start":
           {
-            // If it's a SMOLLM request, initialize the accumulator.
-            // Do NOT add to chat if it's a SMOLLM request, as it's displayed in the cell.
+            // If it's a SMOLLM request, initialize the accumulator and set active cell.
             if (e.data.smollmRequestId) {
                 smollmCellOutputAccumulator.current.set(e.data.smollmRequestId, '');
                 console.log("App.jsx: SMOLLM request started, accumulator initialized for ID:", e.data.smollmRequestId); // Debug log
+
+                // --- NEW: Set activeSmollmCell ---
+                const { row, col, sheetId } = smollmRequestMap.get(e.data.smollmRequestId);
+                const cellName = globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).get  // Helper to get cell name (e.g., A1)
+                    .cellToLocation(row, col);
+                setActiveSmollmCell(cellName);
+                console.log("App.jsx: Setting active SMOLLM cell to:", cellName);
+
             } else {
                 // Existing chat logic for regular chat inputs
                 setMessages((prev) => [
@@ -174,7 +184,7 @@ function App() {
 
                     try {
                         // Update the cell in Univer with the accumulated text, in the correct { v: ... } format
-                        globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: currentAccumulated }]]); // <--- UPDATED HERE
+                        globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: currentAccumulated }]]);
                         console.log("App.jsx: Successfully updated cell R", row, "C", col, "S", sheetId, "with:", currentAccumulated); // Debug log
                     } catch (updateError) {
                         console.error("App.jsx: Error updating Univer cell:", updateError); // Debug error
@@ -197,7 +207,7 @@ function App() {
               if (globalUniverAPI) {
                   try {
                       // Ensure the final, complete output is set to the cell, in the correct { v: ... } format
-                      globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: finalOutput }]]); // <--- UPDATED HERE
+                      globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: finalOutput }]]);
                       console.log("App.jsx: Final cell update for R", row, "C", col, "S", sheetId, "with:", finalOutput); // Debug log
                   } catch (completeError) {
                       console.error("App.jsx: Error during final cell update:", completeError); // Debug error
@@ -205,6 +215,7 @@ function App() {
               }
               smollmRequestMap.delete(completedSmollmId); // Clean up the map from univer-init.js
               smollmCellOutputAccumulator.current.delete(completedSmollmId); // Clean up the accumulator
+              setActiveSmollmCell(null); // --- NEW: Clear activeSmollmCell on completion ---
               console.log("App.jsx: Cleaned up SMOLLM request ID:", completedSmollmId); // Debug log
           }
           // The general `setTps(tps)` and `setNumTokens(numTokens)` from `complete` can stay,
@@ -220,7 +231,7 @@ function App() {
               if (globalUniverAPI) {
                   try {
                       // Update the cell with error message, in the correct { v: ... } format
-                      globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: `ERROR: ${e.data.data}` }]]); // <--- UPDATED HERE
+                      globalUniverAPI.get.activeWorkbook().getSheetBySheetId(sheetId).setRangeValues(row, col, row, col, [[{ v: `ERROR: ${e.data.data}` }]]);
                       console.log("App.jsx: Updated cell R", row, "C", col, "S", sheetId, "with error."); // Debug log
                   } catch (errorUpdateError) {
                       console.error("App.jsx: Error updating cell with error message:", errorUpdateError); // Debug error
@@ -228,6 +239,7 @@ function App() {
               }
               smollmRequestMap.delete(errorSmollmId);
               smollmCellOutputAccumulator.current.delete(errorSmollmId);
+              setActiveSmollmCell(null); // --- NEW: Clear activeSmollmCell on error ---
               console.log("App.jsx: Cleaned up errored SMOLLM request ID:", errorSmollmId); // Debug log
           }
           break;
@@ -278,6 +290,13 @@ function App() {
 
   return IS_WEBGPU_AVAILABLE ? (
     <div className="flex flex-col h-screen mx-auto items justify-end text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900">
+        {/* --- NEW: Display active SMOLLM cell at the top --- */}
+        {activeSmollmCell && (
+            <div className="w-full text-center py-2 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200">
+                AI generating response for cell: <span className="font-bold">{activeSmollmCell}</span>
+            </div>
+        )}
+
       {status === null && messages.length === 0 && (
         <div className="h-full overflow-auto scrollbar-thin flex justify-center items-center flex-col relative">
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
