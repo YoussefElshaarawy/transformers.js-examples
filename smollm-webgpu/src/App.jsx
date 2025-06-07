@@ -142,7 +142,13 @@ function App() {
               cloned[cloned.length - 1] = {
                 ...last,
                 content: last.content + output,
-                globalUniverAPI.getActiveWorkbook().getActiveSheet().getRange('A3').setValue('hello world');
+                useEffect(() => {
+    globalUniverAPI
+      ?.getActiveWorkbook()
+      ?.getActiveSheet()
+      ?.getRange('A3')
+      .setValue('hello world');
+  }, []); // ← runs once after first render
 
               };
               return cloned;
