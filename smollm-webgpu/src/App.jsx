@@ -8,6 +8,8 @@ import Progress from "./components/Progress";
 // --- NEW: Import setWorkerMessenger from univer-init.js ---
 import { setWorkerMessenger, globalUniverAPI } from './univer-init.js';
 
+const sentenceRef = useRef([]);   // keeps the running words without forcing re-renders
+
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
 const EXAMPLES = [
@@ -129,30 +131,32 @@ function App() {
           }
           break;
 
-       case "update":
-  {
-    const { output, tps, numTokens } = e.data;
-    setTps(tps);
-    setNumTokens(numTokens);
+       case "update": {
+  const { output, tps, numTokens } = e.data;
+  setTps(tps);
+  setNumTokens(numTokens);
 
-    setMessages((prev) => {
-      const cloned = [...prev];
-      const last   = cloned.at(-1);
-      cloned[cloned.length - 1] = {
-        ...last,
-        content: last.content + output,
-      };
-      return cloned;
-    });
+  // keep building the assistant message on-screen
+  setMessages(prev => {
+    const cloned = [...prev];
+    const last   = cloned.at(-1);
+    cloned[cloned.length - 1] = { ...last, content: last.content + output };
+    return cloned;
+  });
 
-    // ⬇ side-effect: write to A3 each update
-    globalUniverAPI
-      ?.getActiveWorkbook()
-      ?.getActiveSheet()
-      ?.getRange("A3")
-      .setValue(output);
-  }
-  break;
+  // accumulate and join
+  sentenceRef.current.push(output);            // grow the array
+  const fullSentence = sentenceRef.current.join(" "); // "apple banana …"
+
+  // write the whole string to A3
+  globalUniverAPI
+    ?.getActiveWorkbook()
+    ?.getActiveSheet()
+    ?.getRange("A3")
+    .setValue(fullSentence);
+}
+break;
+
 
       }
     };
