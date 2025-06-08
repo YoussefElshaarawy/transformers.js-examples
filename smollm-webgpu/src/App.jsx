@@ -1,4 +1,3 @@
-
 import { useEffect, useState, useRef } from "react";
 
 import Chat from "./components/Chat";
@@ -145,17 +144,15 @@ function App() {
       };
       return cloned;
     });
-    if (!window._replyChunks) window._replyChunks = [];   // create it once
-    window._replyChunks.push(output);                     // add this chunk
-    const full = window._replyChunks.join("");            // rebuild full text
 
     // ⬇ side-effect: write to A3 each update
     globalUniverAPI
       ?.getActiveWorkbook()
       ?.getActiveSheet()
       ?.getRange("A3")
-      .setValue(full);
-      break;
+      .setValue(output);
+  }
+  break;
 
       }
     };
