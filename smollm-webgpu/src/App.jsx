@@ -17,6 +17,10 @@ const EXAMPLES = [
 ];
 
 function App() {
+  export let smolCommand = false;
+  export function setSmolCommand(val) {
+    smolCommand = val;
+  }
   // Create a reference to the worker object.
   const worker = useRef(null);
   const sentenceRef = useRef([]);   // keeps the running words without forcing re-renders
@@ -134,7 +138,7 @@ function App() {
   setTps(tps);
   setNumTokens(numTokens);
 
-  // keep building the assistant message on-screen
+  /* keep building the on-screen assistant reply */
   setMessages(prev => {
     const cloned = [...prev];
     const last   = cloned.at(-1);
@@ -142,16 +146,16 @@ function App() {
     return cloned;
   });
 
-  // accumulate and join
-  sentenceRef.current.push(output);            // grow the array
-  const fullSentence = sentenceRef.current.join(""); // "apple banana …"
-
-  // write the whole string to A3
-  globalUniverAPI
-    ?.getActiveWorkbook()
-    ?.getActiveSheet()
-    ?.getRange("A3")
-    .setValue(fullSentence);
+  /* only accumulate + write if SmolLM-command mode is ON */
+  if (smolCommand) {
+    sentenceRef.current.push(output);                 // grow the array
+    const fullSentence = sentenceRef.current.join(""); // concat with no spaces
+    globalUniverAPI
+      ?.getActiveWorkbook()
+      ?.getActiveSheet()
+      ?.getRange("A3")
+      .setValue(fullSentence);
+  }
 }
 break;
 
