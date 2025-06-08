@@ -1,4 +1,8 @@
 import { useEffect, useState, useRef } from "react";
+ export let smolCommand = false;
+  export function setSmolCommand(val) {
+    smolCommand = val;
+  }
 
 import Chat from "./components/Chat";
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
@@ -17,10 +21,6 @@ const EXAMPLES = [
 ];
 
 function App() {
-  export let smolCommand = false;
-  export function setSmolCommand(val) {
-    smolCommand = val;
-  }
   // Create a reference to the worker object.
   const worker = useRef(null);
   const sentenceRef = useRef([]);   // keeps the running words without forcing re-renders
