@@ -8,8 +8,6 @@ import Progress from "./components/Progress";
 // --- NEW: Import setWorkerMessenger from univer-init.js ---
 import { setWorkerMessenger, globalUniverAPI } from './univer-init.js';
 
-const sentenceRef = useRef([]);   // keeps the running words without forcing re-renders
-
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
 const EXAMPLES = [
@@ -21,7 +19,7 @@ const EXAMPLES = [
 function App() {
   // Create a reference to the worker object.
   const worker = useRef(null);
-
+  const sentenceRef = useRef([]);   // keeps the running words without forcing re-renders
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
 
