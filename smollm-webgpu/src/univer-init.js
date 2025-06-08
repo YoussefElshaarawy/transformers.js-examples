@@ -79,39 +79,51 @@ univerAPI.getFormula().registerFunction(
   }
 );
 
-/* ------------------------------------------------------------------ */
-/* 4. Register the SMOLLM() custom formula */
-/* ------------------------------------------------------------------ */
-univerAPI.getFormula().registerFunction(
+/*********************************************************************
+ *  SMOLLM() — now also records the caller’s cell in A5              *
+ *********************************************************************/
+univerAPI.getFormula().registerAsyncFunction(
   'SMOLLM',
-  async (prompt) => {
-    if (!workerMessenger) {
-      console.error("AI worker messenger is not set!");
-      return "ERROR: AI not ready";
-    }
+  async (
+    prompt: string,                 // the first *visible* argument
+    runtime?: {                     // ← Univer appends this “runtime”
+      row: number;                  //   info automatically
+      column: number;
+      worksheet: any;
+    },
+  ) => {
+    /* 1.  Work out the clean address (no $) of the calling cell */
+    const colLetter = univerAPI.Util.tools.chatAtABC(runtime.column + 1);   // A-Z… :contentReference[oaicite:0]{index=0}
+    const callerAddress = `${colLetter}${runtime.row + 1}`;                 // e.g. “C5”
 
-    // Send the prompt to the worker.
-    // We are deliberately formatting this to look like a chat message
-    // because the worker.js cannot be modified to handle a new type.
-    workerMessenger({
-      type: "generate",
-      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
+    /* 2.  Push that address into A5 (row-4, col-0) on the same sheet      */
+    // Uses the standard “set-range-values” command pattern                :contentReference[oaicite:1]{index=1}
+    univerAPI.executeCommand('sheet.command.set-range-values', {
+      value: { v: callerAddress },
+      range: { startRow: 4, startColumn: 0, endRow: 4, endColumn: 0 },
     });
 
-    // Return a message indicating generation is in progress.
-    // The actual AI response will appear in the chat UI.
-    return "Generating AI response in chat...";
+    /* 3.  Continue with the original AI workflow (unchanged) */
+    if (!workerMessenger) {
+      console.error('AI worker messenger is not set!');
+      return 'ERROR: AI not ready';
+    }
+    workerMessenger({
+      type: 'generate',
+      data: [{ role: 'user', content: prompt }],
+    });
+
+    /* 4.  Return whatever you want to show in the formula cell */
+    return `Generating from ${callerAddress}…`;
   },
   {
     description: 'customFunction.SMOLLM.description',
     locales: {
       enUS: {
         customFunction: {
-          SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
-          },
+          SMOLLM: { description: 'Calls SmolLM and records its own cell.' },
         },
       },
     },
-  }
+  },
 );
