@@ -84,27 +84,10 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  async (prompt, cellInfo) => { // Added cellInfo parameter
+  async (prompt) => {
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
       return "ERROR: AI not ready";
-    }
-
-    // Extract the row and column of the cell where SMOLLM was called
-    const { row, column } = cellInfo;
-    const cellAddress = `R${row + 1}C${column + 1}`; // UniverJS uses 0-indexed, so add 1 for display
-
-    // Write the calling cell's address to cell A5
-    if (globalUniverAPI) {
-      try {
-        globalUniverAPI
-          ?.getActiveWorkbook()
-          ?.getActiveSheet()
-          ?.getRange("A5")
-          .setValue(`SMOLLM called from: ${cellAddress}`);
-      } catch (e) {
-        console.error("Failed to write to cell A5:", e);
-      }
     }
 
     // Send the prompt to the worker.
@@ -130,8 +113,5 @@ univerAPI.getFormula().registerFunction(
         },
       },
     },
-    // You might need to make this function volatile for cellInfo to always be provided
-    // depending on UniverJS version/configuration. Add `isVolatile: true` if `cellInfo` is null.
-    // isVolatile: true,
   }
 );
