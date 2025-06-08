@@ -32,7 +32,7 @@ function App() {
   const [error, setError] = useState(null);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isRunning, setIsRunning] = useState(false); // Make sure this is initially false
 
   // Inputs and outputs
   const [input, setInput] = useState("");
@@ -43,7 +43,7 @@ function App() {
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
-    setIsRunning(true);
+    setIsRunning(true); // Sets isRunning to true when user hits enter
     setInput("");
   }
 
@@ -79,11 +79,11 @@ function App() {
     // --- NEW: Provide the worker messenger to univer-init.js ---
     // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
-        if (worker.current && status === "ready") { // ADDED status check here
+        // Problem 2 Fix: Check if worker is ready before sending message
+        if (worker.current && status === "ready") {
             worker.current.postMessage(message);
         } else {
             console.error("AI worker not ready for spreadsheet request. Model not loaded.");
-            // --- NEW: Write error to cell A3 if model is not loaded ---
             globalUniverAPI
               ?.getActiveWorkbook()
               ?.getActiveSheet()
@@ -165,12 +165,14 @@ function App() {
         }
         break;
 
-        // --- NEW: Handle "complete" status to set isRunning to false ---
+        // Problem 1 Fix: Set isRunning to false when worker is complete
         case "complete":
           setIsRunning(false);
-          // Clear sentenceRef when smolCommand is complete, preparing for the next
+          // Only clear sentenceRef for smolCommand if it just completed to ensure a fresh start
+          // for the *next* smolCommand. If the user relies on continuous accumulation,
+          // this might need adjustment, but generally, a new command implies a new output.
           if (smolCommand) {
-              sentenceRef.current = [];
+              sentenceRef.current = []; // Clears the ref for the next SmolLM command
           }
           break;
 
@@ -189,21 +191,29 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, [status]); // Added status to dependency array to ensure setWorkerMessenger updates correctly
+  }, [status]); // status added to dependencies so setWorkerMessenger updates correctly based on model status
 
   // Send the messages to the worker thread whenever the `messages` state changes.
+  // This useEffect triggers generation for the interactive chat.
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
       // No user messages yet: do nothing.
       return;
     }
-    // Only trigger generation if the last message was from the user AND it's not already running
-    if (messages.at(-1).role === "user" && !isRunning) {
-      setTps(null);
-      setIsRunning(true); // Ensure isRunning is true when we initiate generation
-      worker.current.postMessage({ type: "generate", data: messages });
+    // Original logic: only generate if the last message is from the user
+    // This prevents re-triggering while the assistant is writing.
+    if (messages.at(-1).role === "assistant") {
+      return;
     }
-  }, [messages]); // Removed isRunning from dependency array to prevent infinite loop
+
+    // Only send the message if the model is ready and not already running a generation
+    // The `onEnter` function sets isRunning(true) for user input.
+    // The `complete` status from worker sets isRunning(false).
+    if (status === "ready" && isRunning) { // Ensure model is ready AND a generation was initiated (by onEnter)
+        setTps(null); // Reset TPS
+        worker.current.postMessage({ type: "generate", data: messages });
+    }
+  }, [messages, isRunning, status]); // Keep messages, isRunning, and status as dependencies
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
@@ -377,7 +387,7 @@ function App() {
           onKeyDown={(e) => {
             if (
               input.length > 0 &&
-              !isRunning && // ADDED !isRunning check
+              !isRunning && // Only allow Enter if not currently running
               e.key === "Enter" &&
               !e.shiftKey
             ) {
