@@ -154,7 +154,7 @@ univerAPI.getFormula().registerFunction(
         customFunction: {
           SMOLLM: {
             description:
-              'Sends a prompt to SmolLM and logs its own cell (without $) to A5. Can take an optional range for context.',
+              'Sends a prompt to SmolLM and generates the response in the same cell. Can take an optional range of cells for an added context.',
           },
         },
       },
