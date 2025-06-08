@@ -205,7 +205,7 @@ break;
           <div className="flex flex-col items-center mb-1 max-w-[320px] text-center">
             <img
               src="logo.png"
-              width="200%"
+              width="300%"
               height="auto"
               className="block"
             ></img>
