@@ -80,27 +80,47 @@ univerAPI.getFormula().registerFunction(
 );
 
 /*********************************************************************
- *  SMOLLM() — records its own address (no $) in A5 and chats         *
+ *  SMOLLM() — logs its caller’s address (sans “$”) into A5          *
+ *            and then kicks the AI worker                           *
  *********************************************************************/
 univerAPI.getFormula().registerAsyncFunction(
   'SMOLLM',
-  async function (prompt, ctx) {
-    /* ctx holds row/column when the engine is ≥ 0.8.0 */
-    const row    = (ctx && ctx.row)    ?? 0;            // 0-based
-    const column = (ctx && ctx.column) ?? 0;            // 0-based
+  // any number of visible args → …args
+  async function (...args) {
+    // ──────────────────────────────────────────────────────────────
+    // 0.  Split “visible” arguments from the hidden runtime object
+    // ──────────────────────────────────────────────────────────────
+    const maybeRuntime = args[args.length - 1];
+    const isRuntimeObj =
+      maybeRuntime &&
+      typeof maybeRuntime === 'object' &&
+      'row' in maybeRuntime &&
+      'column' in maybeRuntime;
 
-    // --- 1. Convert column number → letters (“A”, “B”, …, “AA”) ---
-    const here = columnToLetter(column + 1) + (row + 1);
+    const runtime   = isRuntimeObj ? maybeRuntime      : { row: 0, column: 0 };
+    const prompt    = isRuntimeObj ? args[0]            : args.join(','); // first visible arg
+    const row       = runtime.row;          // 0-based
+    const column    = runtime.column;       // 0-based
 
-    // --- 2. Write that clean address into A5 (row-4, col-0) ---
+    // ──────────────────────────────────────────────────────────────
+    // 1.  Convert 0-based column → Excel letters (“A”..“Z”, “AA”…)
+    // ──────────────────────────────────────────────────────────────
+    const here = columnToLetter(column + 1) + (row + 1);   // e.g. "C7"
+
+    // ──────────────────────────────────────────────────────────────
+    // 2.  Drop that clean address into cell A5 (row 4, col 0)
+    // ──────────────────────────────────────────────────────────────
     univerAPI.executeCommand('sheet.command.set-range-values', {
       value:  { v: here },
       range:  { startRow: 4, startColumn: 0, endRow: 4, endColumn: 0 },
     });
 
-    // --- 3. Kick off the AI worker exactly as before -------------
+    // ──────────────────────────────────────────────────────────────
+    // 3.  Fire the AI worker exactly as before
+    // ──────────────────────────────────────────────────────────────
     if (!workerMessenger) return 'ERROR: AI not ready';
-    workerMessenger({ type: 'generate', data: [{ role: 'user', content: prompt }] });
+    workerMessenger({ type: 'generate',
+                      data: [{ role: 'user', content: prompt }] });
 
     return `Generating from ${here}…`;
   },
@@ -116,7 +136,7 @@ univerAPI.getFormula().registerAsyncFunction(
   }
 );
 
-/* Helper — pure JS, no deps */
+/* Helper: number → “A…Z, AA…Z” */
 function columnToLetter(n) {
   let s = '';
   while (n > 0) {
@@ -126,4 +146,3 @@ function columnToLetter(n) {
   }
   return s;
 }
-
