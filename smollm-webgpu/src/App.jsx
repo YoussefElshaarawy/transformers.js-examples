@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-export let smolCommand = false;
+export let smolCommand = true;
 export function setSmolCommand(val) {
   smolCommand = val;
 }
