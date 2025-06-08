@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-export let smolCommand = false;
+export let smolCommand = true;
 export function setSmolCommand(val) {
   smolCommand = val;
 }
@@ -9,6 +9,7 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
+// --- NEW: Import setWorkerMessenger from univer-init.js ---
 import { setWorkerMessenger, globalUniverAPI } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
@@ -20,8 +21,9 @@ const EXAMPLES = [
 ];
 
 function App() {
+  // Create a reference to the worker object.
   const worker = useRef(null);
-  const sentenceRef = useRef([]);
+  const sentenceRef = useRef([]);    // keeps the running words without forcing re-renders
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
 
@@ -30,7 +32,7 @@ function App() {
   const [error, setError] = useState(null);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isRunning, setIsRunning] = useState(false); // Make sure this is initially false
 
   // Inputs and outputs
   const [input, setInput] = useState("");
@@ -38,19 +40,16 @@ function App() {
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
-  // --- NEW: State to store the target cell for SmolLM commands ---
-  const [smolCommandTargetCell, setSmolCommandTargetCell] = useState(null);
-
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
-    setIsRunning(true);
+    setIsRunning(true); // Sets isRunning to true when user hits enter
     setInput("");
-    // When user types in chat, clear any previous smolCommandTargetCell
-    setSmolCommandTargetCell(null);
   }
 
   function onInterrupt() {
+    // NOTE: We do not set isRunning to false here because the worker
+    // will send a 'complete' message when it is done.
     worker.current.postMessage({ type: "interrupt" });
   }
 
@@ -67,49 +66,37 @@ function App() {
     target.style.height = `${newHeight}px`;
   }
 
+  // We use the `useEffect` hook to setup the worker as soon as the `App` component is mounted.
   useEffect(() => {
+    // Create the worker if it does not yet exist.
     if (!worker.current) {
       worker.current = new Worker(new URL("./worker.js", import.meta.url), {
         type: "module",
       });
-      worker.current.postMessage({ type: "check" });
+      worker.current.postMessage({ type: "check" }); // Do a feature check
     }
 
+    // --- NEW: Provide the worker messenger to univer-init.js ---
+    // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
-      if (worker.current && status === "ready") {
-        // --- NEW: Set smolCommand and target cell if message type is 'generate' from Univer ---
-        if (message.type === "generate" && message.targetCell) {
-          setSmolCommand(true); // Enable smolCommand mode
-          setSmolCommandTargetCell(message.targetCell); // Store the target cell
+        // Problem 2 Fix: Check if worker is ready before sending message
+        if (worker.current && status === "ready") {
+            worker.current.postMessage(message);
         } else {
-          setSmolCommand(false); // Ensure smolCommand is off for regular chat
-          setSmolCommandTargetCell(null); // Clear target cell
-        }
-        worker.current.postMessage(message);
-      } else {
-        console.error("AI worker not ready for spreadsheet request. Model not loaded.");
-        // If the model is not loaded, we still want to update the original cell
-        // so we need to know WHICH cell to update.
-        if (message.targetCell && globalUniverAPI) {
+            console.error("AI worker not ready for spreadsheet request. Model not loaded.");
             globalUniverAPI
-                ?.getActiveWorkbook()
-                ?.getActiveSheet()
-                ?.getRange(message.targetCell) // Use the specific cell
-                .setValue("Model is not loaded.");
-        } else if (globalUniverAPI) {
-            // Fallback if targetCell is somehow missing (e.g. if the initial prompt failed earlier)
-            globalUniverAPI
-                ?.getActiveWorkbook()
-                ?.getActiveSheet()
-                ?.getRange("A3") // Revert to A3 if no targetCell is available
-                .setValue("Model is not loaded.");
+              ?.getActiveWorkbook()
+              ?.getActiveSheet()
+              ?.getRange("A3")
+              .setValue("Model is not loaded.");
         }
-      }
     });
 
+    // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
       switch (e.data.status) {
         case "loading":
+          // Model file start load: add a new progress item to the list.
           setStatus("loading");
           setLoadingMessage(e.data.data);
           break;
@@ -119,6 +106,7 @@ function App() {
           break;
 
         case "progress":
+          // Model file progress: update one of the progress items.
           setProgressItems((prev) =>
             prev.map((item) => {
               if (item.file === e.data.file) {
@@ -130,103 +118,102 @@ function App() {
           break;
 
         case "done":
+          // Model file loaded: remove the progress item from the list.
           setProgressItems((prev) =>
             prev.filter((item) => item.file !== e.data.file),
           );
           break;
 
         case "ready":
+          // Pipeline ready: the worker is ready to accept messages.
           setStatus("ready");
           break;
 
         case "start":
           {
-            // Only add assistant message to chat UI if NOT in smolCommand mode
-            if (!smolCommand) {
-                setMessages((prev) => [
-                    ...prev,
-                    { role: "assistant", content: "" },
-                ]);
-            }
+            // Start generation
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: "" },
+            ]);
           }
           break;
 
-        case "update": {
+       case "update": {
           const { output, tps, numTokens } = e.data;
           setTps(tps);
           setNumTokens(numTokens);
 
-          // Update chat UI only if NOT in smolCommand mode
-          if (!smolCommand) {
-            setMessages(prev => {
-              const cloned = [...prev];
-              const last = cloned.at(-1);
-              cloned[cloned.length - 1] = { ...last, content: last.content + output };
-              return cloned;
-            });
-          }
+          /* keep building the on-screen assistant reply */
+          setMessages(prev => {
+            const cloned = [...prev];
+            const last    = cloned.at(-1);
+            cloned[cloned.length - 1] = { ...last, content: last.content + output };
+            return cloned;
+          });
 
           /* only accumulate + write if SmolLM-command mode is ON */
-          if (smolCommand && smolCommandTargetCell) { // <--- Use smolCommandTargetCell
-            sentenceRef.current.push(output);
-            const fullSentence = sentenceRef.current.join("");
+          if (smolCommand) {
+            sentenceRef.current.push(output);              // grow the array
+            const fullSentence = sentenceRef.current.join(""); // concat with no spaces
             globalUniverAPI
               ?.getActiveWorkbook()
               ?.getActiveSheet()
-              ?.getRange(smolCommandTargetCell) // <--- Use the stored target cell
+              ?.getRange("A3")
               .setValue(fullSentence);
           }
         }
         break;
 
+        // Problem 1 Fix: Set isRunning to false when worker is complete
         case "complete":
           setIsRunning(false);
-          // Only clear sentenceRef and reset smolCommand state if it just completed
+          // Only clear sentenceRef for smolCommand if it just completed to ensure a fresh start
+          // for the *next* smolCommand. If the user relies on continuous accumulation,
+          // this might need adjustment, but generally, a new command implies a new output.
           if (smolCommand) {
-            sentenceRef.current = [];
-            setSmolCommand(false); // Reset smolCommand mode
-            setSmolCommandTargetCell(null); // Clear the target cell after completion
+              sentenceRef.current = []; // Clears the ref for the next SmolLM command
           }
           break;
+
       }
     };
     const onErrorReceived = (e) => {
       console.error("Worker error:", e);
-      // Optional: Set isRunning to false on error, and update target cell if applicable
-      setIsRunning(false);
-      if (smolCommandTargetCell && globalUniverAPI) {
-          globalUniverAPI
-              ?.getActiveWorkbook()
-              ?.getActiveSheet()
-              ?.getRange(smolCommandTargetCell)
-              .setValue("ERROR: AI generation failed.");
-      }
-      setSmolCommand(false);
-      setSmolCommandTargetCell(null);
     };
 
+    // Attach the callback function as an event listener.
     worker.current.addEventListener("message", onMessageReceived);
     worker.current.addEventListener("error", onErrorReceived);
 
+    // Define a cleanup function for when the component is unmounted.
     return () => {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, [status, smolCommand, smolCommandTargetCell]); // Add smolCommand and smolCommandTargetCell to dependencies
+  }, [status]); // status added to dependencies so setWorkerMessenger updates correctly based on model status
 
+  // Send the messages to the worker thread whenever the `messages` state changes.
+  // This useEffect triggers generation for the interactive chat.
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) {
+      // No user messages yet: do nothing.
       return;
     }
+    // Original logic: only generate if the last message is from the user
+    // This prevents re-triggering while the assistant is writing.
     if (messages.at(-1).role === "assistant") {
       return;
     }
 
-    if (status === "ready" && isRunning && !smolCommand) { // Only generate for chat if not smolCommand
-        setTps(null);
+    // Only send the message if the model is ready and not already running a generation
+    // The `onEnter` function sets isRunning(true) for user input.
+    // The `complete` status from worker sets isRunning(false).
+    if (status === "ready" && isRunning) { // Ensure model is ready AND a generation was initiated (by onEnter)
+        setTps(null); // Reset TPS
         worker.current.postMessage({ type: "generate", data: messages });
     }
-  }, [messages, isRunning, status, smolCommand]); // Add smolCommand to dependencies
+  }, [messages, isRunning, status]); // Keep messages, isRunning, and status as dependencies
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
@@ -400,11 +387,11 @@ function App() {
           onKeyDown={(e) => {
             if (
               input.length > 0 &&
-              !isRunning &&
+              !isRunning && // Only allow Enter if not currently running
               e.key === "Enter" &&
               !e.shiftKey
             ) {
-              e.preventDefault();
+              e.preventDefault(); // Prevent default behavior of Enter key
               onEnter(input);
             }
           }}
