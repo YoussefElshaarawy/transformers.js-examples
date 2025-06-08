@@ -80,50 +80,50 @@ univerAPI.getFormula().registerFunction(
 );
 
 /*********************************************************************
- *  SMOLLM() — now also records the caller’s cell in A5              *
+ *  SMOLLM() — records its own address (no $) in A5 and chats         *
  *********************************************************************/
 univerAPI.getFormula().registerAsyncFunction(
   'SMOLLM',
-  async (
-    prompt: string,                 // the first *visible* argument
-    runtime?: {                     // ← Univer appends this “runtime”
-      row: number;                  //   info automatically
-      column: number;
-      worksheet: any;
-    },
-  ) => {
-    /* 1.  Work out the clean address (no $) of the calling cell */
-    const colLetter = univerAPI.Util.tools.chatAtABC(runtime.column + 1);   // A-Z… :contentReference[oaicite:0]{index=0}
-    const callerAddress = `${colLetter}${runtime.row + 1}`;                 // e.g. “C5”
+  async function (prompt, ctx) {
+    /* ctx holds row/column when the engine is ≥ 0.8.0 */
+    const row    = (ctx && ctx.row)    ?? 0;            // 0-based
+    const column = (ctx && ctx.column) ?? 0;            // 0-based
 
-    /* 2.  Push that address into A5 (row-4, col-0) on the same sheet      */
-    // Uses the standard “set-range-values” command pattern                :contentReference[oaicite:1]{index=1}
+    // --- 1. Convert column number → letters (“A”, “B”, …, “AA”) ---
+    const here = columnToLetter(column + 1) + (row + 1);
+
+    // --- 2. Write that clean address into A5 (row-4, col-0) ---
     univerAPI.executeCommand('sheet.command.set-range-values', {
-      value: { v: callerAddress },
-      range: { startRow: 4, startColumn: 0, endRow: 4, endColumn: 0 },
+      value:  { v: here },
+      range:  { startRow: 4, startColumn: 0, endRow: 4, endColumn: 0 },
     });
 
-    /* 3.  Continue with the original AI workflow (unchanged) */
-    if (!workerMessenger) {
-      console.error('AI worker messenger is not set!');
-      return 'ERROR: AI not ready';
-    }
-    workerMessenger({
-      type: 'generate',
-      data: [{ role: 'user', content: prompt }],
-    });
+    // --- 3. Kick off the AI worker exactly as before -------------
+    if (!workerMessenger) return 'ERROR: AI not ready';
+    workerMessenger({ type: 'generate', data: [{ role: 'user', content: prompt }] });
 
-    /* 4.  Return whatever you want to show in the formula cell */
-    return `Generating from ${callerAddress}…`;
+    return `Generating from ${here}…`;
   },
   {
     description: 'customFunction.SMOLLM.description',
     locales: {
       enUS: {
         customFunction: {
-          SMOLLM: { description: 'Calls SmolLM and records its own cell.' },
+          SMOLLM: { description: 'Calls SmolLM and logs its own cell to A5.' },
         },
       },
     },
-  },
+  }
 );
+
+/* Helper — pure JS, no deps */
+function columnToLetter(n) {
+  let s = '';
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
