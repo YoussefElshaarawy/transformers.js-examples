@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from "react";
- export let smolCommand = false;
-  export function setSmolCommand(val) {
-    smolCommand = val;
-  }
+export let smolCommand = false;
+export function setSmolCommand(val) {
+  smolCommand = val;
+}
 
 import Chat from "./components/Chat";
 import ArrowRightIcon from "./components/icons/ArrowRightIcon";
@@ -23,7 +23,7 @@ const EXAMPLES = [
 function App() {
   // Create a reference to the worker object.
   const worker = useRef(null);
-  const sentenceRef = useRef([]);   // keeps the running words without forcing re-renders
+  const sentenceRef = useRef([]);    // keeps the running words without forcing re-renders
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
 
@@ -79,10 +79,16 @@ function App() {
     // --- NEW: Provide the worker messenger to univer-init.js ---
     // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
-        if (worker.current) {
+        if (worker.current && status === "ready") { // ADDED status check here
             worker.current.postMessage(message);
         } else {
-            console.error("AI worker not ready for spreadsheet request.");
+            console.error("AI worker not ready for spreadsheet request. Model not loaded.");
+            // --- NEW: Write error to cell A3 if model is not loaded ---
+            globalUniverAPI
+              ?.getActiveWorkbook()
+              ?.getActiveSheet()
+              ?.getRange("A3")
+              .setValue("Model is not loaded.");
         }
     });
 
@@ -134,31 +140,39 @@ function App() {
           break;
 
        case "update": {
-  const { output, tps, numTokens } = e.data;
-  setTps(tps);
-  setNumTokens(numTokens);
+          const { output, tps, numTokens } = e.data;
+          setTps(tps);
+          setNumTokens(numTokens);
 
-  /* keep building the on-screen assistant reply */
-  setMessages(prev => {
-    const cloned = [...prev];
-    const last   = cloned.at(-1);
-    cloned[cloned.length - 1] = { ...last, content: last.content + output };
-    return cloned;
-  });
+          /* keep building the on-screen assistant reply */
+          setMessages(prev => {
+            const cloned = [...prev];
+            const last    = cloned.at(-1);
+            cloned[cloned.length - 1] = { ...last, content: last.content + output };
+            return cloned;
+          });
 
-  /* only accumulate + write if SmolLM-command mode is ON */
-  if (smolCommand) {
-    sentenceRef.current.push(output);                 // grow the array
-    const fullSentence = sentenceRef.current.join(""); // concat with no spaces
-    globalUniverAPI
-      ?.getActiveWorkbook()
-      ?.getActiveSheet()
-      ?.getRange("A3")
-      .setValue(fullSentence);
-  }
-}
-break;
+          /* only accumulate + write if SmolLM-command mode is ON */
+          if (smolCommand) {
+            sentenceRef.current.push(output);              // grow the array
+            const fullSentence = sentenceRef.current.join(""); // concat with no spaces
+            globalUniverAPI
+              ?.getActiveWorkbook()
+              ?.getActiveSheet()
+              ?.getRange("A3")
+              .setValue(fullSentence);
+          }
+        }
+        break;
 
+        // --- NEW: Handle "complete" status to set isRunning to false ---
+        case "complete":
+          setIsRunning(false);
+          // Clear sentenceRef when smolCommand is complete, preparing for the next
+          if (smolCommand) {
+              sentenceRef.current = [];
+          }
+          break;
 
       }
     };
@@ -175,7 +189,7 @@ break;
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, []);
+  }, [status]); // Added status to dependency array to ensure setWorkerMessenger updates correctly
 
   // Send the messages to the worker thread whenever the `messages` state changes.
   useEffect(() => {
@@ -183,13 +197,13 @@ break;
       // No user messages yet: do nothing.
       return;
     }
-    if (messages.at(-1).role === "assistant") {
-      // Do not update if the last message is from the assistant
-      return;
+    // Only trigger generation if the last message was from the user AND it's not already running
+    if (messages.at(-1).role === "user" && !isRunning) {
+      setTps(null);
+      setIsRunning(true); // Ensure isRunning is true when we initiate generation
+      worker.current.postMessage({ type: "generate", data: messages });
     }
-    setTps(null);
-    worker.current.postMessage({ type: "generate", data: messages });
-  }, [messages, isRunning]);
+  }, [messages]); // Removed isRunning from dependency array to prevent infinite loop
 
   useEffect(() => {
     if (!chatContainerRef.current || !isRunning) return;
@@ -363,7 +377,7 @@ break;
           onKeyDown={(e) => {
             if (
               input.length > 0 &&
-              !isRunning &&
+              !isRunning && // ADDED !isRunning check
               e.key === "Enter" &&
               !e.shiftKey
             ) {
