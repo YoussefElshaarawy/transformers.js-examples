@@ -9,8 +9,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- NEW: Import setWorkerMessenger from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI } from './univer-init.js';
+// --- UPDATED: Import setWorkerMessenger, globalUniverAPI, smollmCellAddress, and setSmollmCellAddress from univer-init.js ---
+import { setWorkerMessenger, globalUniverAPI, smollmCellAddress, setSmollmCellAddress } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -39,6 +39,9 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
+
+  // --- NEW: State to hold the target cell address from SMOLLM ---
+  const [targetCell, setTargetCell] = useState(null);
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
@@ -79,17 +82,21 @@ function App() {
     // --- NEW: Provide the worker messenger to univer-init.js ---
     // This allows the SMOLLM function in the sheet to send messages to the worker.
     setWorkerMessenger((message) => {
-        // Problem 2 Fix: Check if worker is ready before sending message
-        if (worker.current && status === "ready") {
-            worker.current.postMessage(message);
-        } else {
-            console.error("AI worker not ready for spreadsheet request. Model not loaded.");
-            globalUniverAPI
-              ?.getActiveWorkbook()
-              ?.getActiveSheet()
-              ?.getRange("A3")
-              .setValue("Model is not loaded.");
-        }
+      // Problem 2 Fix: Check if worker is ready before sending message
+      if (worker.current && status === "ready") {
+        worker.current.postMessage(message);
+        // Set the target cell in App.jsx when a new SMOLLM command is initiated
+        setTargetCell(smollmCellAddress); // This will update targetCell
+      } else {
+        console.error("AI worker not ready for spreadsheet request. Model not loaded.");
+        // --- FIX: Use targetCell for the error message, or a default if not available ---
+        const cellToUpdate = targetCell || "A3"; // Fallback to A3 if targetCell isn't set yet
+        globalUniverAPI
+          ?.getActiveWorkbook()
+          ?.getActiveSheet()
+          ?.getRange(cellToUpdate)
+          .setValue("ERROR: Model not loaded."); // More specific error message
+      }
     });
 
     // Create a callback function for messages from the worker thread.
@@ -139,7 +146,7 @@ function App() {
           }
           break;
 
-       case "update": {
+        case "update": {
           const { output, tps, numTokens } = e.data;
           setTps(tps);
           setNumTokens(numTokens);
@@ -153,13 +160,13 @@ function App() {
           });
 
           /* only accumulate + write if SmolLM-command mode is ON */
-          if (smolCommand) {
-            sentenceRef.current.push(output);              // grow the array
+          if (smolCommand && targetCell) { // Ensure smolCommand is on and we have a target cell
+            sentenceRef.current.push(output);    // grow the array
             const fullSentence = sentenceRef.current.join(""); // concat with no spaces
             globalUniverAPI
               ?.getActiveWorkbook()
               ?.getActiveSheet()
-              ?.getRange("A3")
+              ?.getRange(targetCell) // Use the dynamic targetCell
               .setValue(fullSentence);
           }
         }
@@ -173,6 +180,7 @@ function App() {
           // this might need adjustment, but generally, a new command implies a new output.
           if (smolCommand) {
               sentenceRef.current = []; // Clears the ref for the next SmolLM command
+              setTargetCell(null); // Clear the target cell after completion
           }
           break;
 
@@ -191,7 +199,7 @@ function App() {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
     };
-  }, [status]); // status added to dependencies so setWorkerMessenger updates correctly based on model status
+  }, [status, targetCell]); // status and targetCell added to dependencies so setWorkerMessenger updates correctly based on model status and target cell
 
   // Send the messages to the worker thread whenever the `messages` state changes.
   // This useEffect triggers generation for the interactive chat.
