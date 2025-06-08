@@ -22,6 +22,14 @@ export function setWorkerMessenger(messenger) {
 // --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
+// --- NEW: Export a variable to hold the cell address from SMOLLM ---
+export let smollmCellAddress = null;
+
+// --- NEW: Export a function to set the smollmCellAddress ---
+export function setSmollmCellAddress(address) {
+  smollmCellAddress = address;
+}
+
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
@@ -85,19 +93,17 @@ univerAPI.getFormula().registerFunction(
 
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  function (prompt = '') {      // MUST be `function`, not arrow ⇒ gets context
+  function (prompt = '') {
+    // MUST be `function`, not arrow ⇒ gets context
     /* 1️⃣  Where am I?  ------------------------------------------------- */
     const ctx = this.getContext ? this.getContext() : this; // works in ≥0.8.x
-    const row = ctx.row;                                  // 0-based, real row
-    const col = ctx.column;                               // 0-based, real col
+    const row = ctx.row; // 0-based, real row
+    const col = ctx.column; // 0-based, real col
 
-    const here = colToLetters(col + 1) + (row + 1);       // e.g. "D12"
+    const here = colToLetters(col + 1) + (row + 1); // e.g. "D12"
 
-    /* 2️⃣  Write address into A5  --------------------------------------- */
-    univerAPI.executeCommand('sheet.command.set-range-values', {
-      value: { v: here },
-      range: { startRow: 4, startColumn: 0, endRow: 4, endColumn: 0 },
-    });
+    /* 2️⃣  Pass address to the App component via exported variable  ------- */
+    setSmollmCellAddress(here); // Set the exported variable with the cell address
 
     /* 3️⃣  Send prompt to SmolLM worker  -------------------------------- */
     if (!workerMessenger) {
