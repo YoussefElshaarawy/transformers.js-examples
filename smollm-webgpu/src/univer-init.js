@@ -84,18 +84,29 @@ univerAPI.getFormula().registerFunction(
 /* ------------------------------------------------------------------ */
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  async (prompt) => {
+  async (prompt, caller) => { // <--- ADD caller parameter
     if (!workerMessenger) {
       console.error("AI worker messenger is not set!");
       return "ERROR: AI not ready";
     }
 
-    // Send the prompt to the worker.
+    // Extract the cell address from the caller object
+    const cellAddress = caller?.row && caller?.column ?
+      `${String.fromCharCode(65 + caller.column)}${caller.row + 1}` : null;
+
+    if (!cellAddress) {
+      console.error("Could not determine calling cell address for SMOLLM.");
+      return "ERROR: Invalid cell context";
+    }
+
+    // Send the prompt and cell address to the worker.
     // We are deliberately formatting this to look like a chat message
     // because the worker.js cannot be modified to handle a new type.
     workerMessenger({
       type: "generate",
-      data: [{ role: "user", content: prompt }] // Worker expects an array of messages
+      data: [{ role: "user", content: prompt }], // Worker expects an array of messages
+      // --- NEW: Pass the targetCell to the worker message ---
+      targetCell: cellAddress,
     });
 
     // Return a message indicating generation is in progress.
@@ -108,7 +119,7 @@ univerAPI.getFormula().registerFunction(
       enUS: {
         customFunction: {
           SMOLLM: {
-            description: 'Sends a prompt to the SmolLM AI model and displays response in chat.',
+            description: 'Sends a prompt to the SmolLM AI model and displays response in chat, updating the calling cell.', // <--- Updated description
           },
         },
       },
