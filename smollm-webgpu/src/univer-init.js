@@ -1,3 +1,8 @@
+/*********************************************************************
+ *  univer-init.js  —  drop this into src/ (or adjust the path)       *
+ *********************************************************************/
+
+/* ----------  Imports (all at top, ES-module style) --------------- */
 import {
   createUniver,
   defaultTheme,
@@ -7,46 +12,45 @@ import {
 import { UniverSheetsCorePreset } from '@univerjs/presets/preset-sheets-core';
 import enUS from '@univerjs/presets/preset-sheets-core/locales/en-US';
 import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
+import { BaseFunction, StringValueObject } from '@univerjs/engine-formula';
 
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
-// --- NEW: Export a variable to hold the worker messenger function ---
+/* ----------  Globals & simple helpers  --------------------------- */
 export let workerMessenger = null;
-
-// --- NEW: Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
-/* ------------------------------------------------------------------ */
-/* 1. Boot‑strap Univer and mount inside <div id="univer"> */
-/* ------------------------------------------------------------------ */
+function columnToLetter(n) {
+  let s = '';
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;                 // 1 → A, 27 → AA, etc.
+}
+
+/* ----------  Boot-strap Univer  ---------------------------------- */
 const { univerAPI } = createUniver({
   locale: LocaleType.EN_US,
   locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
   theme: defaultTheme,
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
-
-// --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
 
-/* ------------------------------------------------------------------ */
-/* 2. Create a visible 100 × 100 sheet */
-/* ------------------------------------------------------------------ */
 univerAPI.createUniverSheet({
   name: 'Hello Univer',
   rowCount: 100,
   columnCount: 100,
 });
 
-/* ------------------------------------------------------------------ */
-/* 3. Register the TAYLORSWIFT() custom formula */
-/* ------------------------------------------------------------------ */
+/* ----------  Example fun function:  TAYLORSWIFT() ---------------- */
 const LYRICS = [
   "Cause darling I'm a nightmare dressed like a daydream",
   "We're happy, free, confused and lonely at the same time",
@@ -58,91 +62,43 @@ const LYRICS = [
 univerAPI.getFormula().registerFunction(
   'TAYLORSWIFT',
   (...args) => {
-    const value = Array.isArray(args[0]) ? args[0][0] : args[0];
-    const idx = Number(value);
+    const idx = Number(Array.isArray(args[0]) ? args[0][0] : args[0]);
     return idx >= 1 && idx <= LYRICS.length
       ? LYRICS[idx - 1]
       : LYRICS[Math.floor(Math.random() * LYRICS.length)];
   },
-  {
-    description: 'customFunction.TAYLORSWIFT.description',
-    locales: {
-      enUS: {
-        customFunction: {
-          TAYLORSWIFT: {
-            description:
-              'Returns a Taylor Swift lyric (optional 1‑5 chooses a specific line).',
-          },
-        },
-      },
-    },
-  }
+  { description: 'Returns a random (or indexed) Taylor Swift lyric.' }
 );
 
-/*********************************************************************
- *  SMOLLM() — logs its caller’s address (sans “$”) into A5          *
- *            and then kicks the AI worker                           *
- *********************************************************************/
-univerAPI.getFormula().registerAsyncFunction(
-  'SMOLLM',
-  // any number of visible args → …args
-  async function (...args) {
-    // ──────────────────────────────────────────────────────────────
-    // 0.  Split “visible” arguments from the hidden runtime object
-    // ──────────────────────────────────────────────────────────────
-    const maybeRuntime = args[args.length - 1];
-    const isRuntimeObj =
-      maybeRuntime &&
-      typeof maybeRuntime === 'object' &&
-      'row' in maybeRuntime &&
-      'column' in maybeRuntime;
+/* ----------  Class-based SMOLLM() (no arguments needed) ---------- */
+class SMOLLMFunc extends BaseFunction {
+  async calculate() {
+    /* 1. Which cell is this formula sitting in? */
+    const { row, column } = this.getContext();          // 0-based indices
+    const here = columnToLetter(column + 1) + (row + 1); // e.g. “D12”
 
-    const runtime   = isRuntimeObj ? maybeRuntime      : { row: 0, column: 0 };
-    const prompt    = isRuntimeObj ? args[0]            : args.join(','); // first visible arg
-    const row       = runtime.row;          // 0-based
-    const column    = runtime.column;       // 0-based
-
-    // ──────────────────────────────────────────────────────────────
-    // 1.  Convert 0-based column → Excel letters (“A”..“Z”, “AA”…)
-    // ──────────────────────────────────────────────────────────────
-    const here = columnToLetter(column + 1) + (row + 1);   // e.g. "C7"
-
-    // ──────────────────────────────────────────────────────────────
-    // 2.  Drop that clean address into cell A5 (row 4, col 0)
-    // ──────────────────────────────────────────────────────────────
-    univerAPI.executeCommand('sheet.command.set-range-values', {
+    /* 2. Write that address (sans $) into A5 */
+    globalUniverAPI.executeCommand('sheet.command.set-range-values', {
       value:  { v: here },
       range:  { startRow: 4, startColumn: 0, endRow: 4, endColumn: 0 },
     });
 
-    // ──────────────────────────────────────────────────────────────
-    // 3.  Fire the AI worker exactly as before
-    // ──────────────────────────────────────────────────────────────
-    if (!workerMessenger) return 'ERROR: AI not ready';
-    workerMessenger({ type: 'generate',
-                      data: [{ role: 'user', content: prompt }] });
+    /* 3. Fire the AI worker (optional, non-blocking) */
+    if (workerMessenger) {
+      workerMessenger({
+        type: 'generate',
+        data: [{ role: 'user', content: '' }],
+      });
+    }
 
-    return `Generating from ${here}…`;
-  },
-  {
-    description: 'customFunction.SMOLLM.description',
-    locales: {
-      enUS: {
-        customFunction: {
-          SMOLLM: { description: 'Calls SmolLM and logs its own cell to A5.' },
-        },
-      },
-    },
+    /* 4. Show something in the formula cell */
+    return StringValueObject.create(`Generating from ${here}…`);
   }
-);
-
-/* Helper: number → “A…Z, AA…Z” */
-function columnToLetter(n) {
-  let s = '';
-  while (n > 0) {
-    const r = (n - 1) % 26;
-    s = String.fromCharCode(65 + r) + s;
-    n = Math.floor((n - 1) / 26);
-  }
-  return s;
 }
+
+/* ----------  Register SMOLLM so users can just type =SMOLLM() ---- */
+univerAPI.getFormula().registerFunction(
+  'SMOLLM',                 // what users type
+  SMOLLMFunc,               // handler class
+  { description: 'Calls SmolLM and records its own cell in A5.' }
+);
