@@ -144,7 +144,7 @@ function App() {
 
   // accumulate and join
   sentenceRef.current.push(output);            // grow the array
-  const fullSentence = sentenceRef.current.join(" "); // "apple banana …"
+  const fullSentence = sentenceRef.current.join(""); // "apple banana …"
 
   // write the whole string to A3
   globalUniverAPI
