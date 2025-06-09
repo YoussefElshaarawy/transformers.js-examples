@@ -30,6 +30,12 @@ export function setSmollmCellAddress(address) {
   smollmCellAddress = address;
 }
 
+// --- NEW: Export for TTS messenger and its setter ---
+export let ttsMessenger = null;
+export function setTTSMessenger(messenger) {
+  ttsMessenger = messenger;
+}
+
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
@@ -155,6 +161,72 @@ univerAPI.getFormula().registerFunction(
           SMOLLM: {
             description:
               'Sends a prompt to SmolLM and generates the response in the same cell. Can take an optional range of cells for an added context.',
+          },
+        },
+      },
+    },
+  }
+);
+
+/* ------------------------------------------------------------------ */
+/* NEW: 5. Register the TTS() custom formula */
+/* ------------------------------------------------------------------ */
+
+univerAPI.getFormula().registerFunction(
+  'TTS',
+  function (prompt = '', secondArg) {
+    // MUST be `function`, not arrow ⇒ gets context
+    const ctx = this.getContext ? this.getContext() : this;
+    const row = ctx.row;
+    const col = ctx.column;
+    const here = colToLetters(col + 1) + (row + 1);
+
+    let additionalContext = '';
+    let finalPrompt = prompt;
+
+    // Process additional context from second argument if it's a range
+    if (secondArg && Array.isArray(secondArg) && secondArg.every(row => Array.isArray(row))) {
+      try {
+        const contextValues = [];
+        secondArg.forEach(rowArray => {
+          rowArray.forEach(cellValue => {
+            if (cellValue !== undefined && cellValue !== null && String(cellValue).trim() !== '') {
+              contextValues.push(String(cellValue).trim());
+            }
+          });
+        });
+
+        if (contextValues.length > 0) {
+          additionalContext = contextValues.join(' ');
+          finalPrompt = `Context: ${additionalContext}\n\nTask: ${prompt}`;
+          console.log('Processed TTS context from range:', additionalContext);
+        }
+      } catch (e) {
+        console.error("Error processing TTS context range:", e);
+        finalPrompt = `Error reading TTS context range. Original prompt: ${prompt}`;
+      }
+    }
+
+    // Send prompt to TTS messenger in App.jsx
+    if (!ttsMessenger) {
+      console.error('TTS messenger is not set!');
+      return 'ERROR: TTS not ready';
+    }
+    ttsMessenger({
+      prompt: finalPrompt,
+      cellAddress: here // Pass the cell address for updating
+    });
+
+    return `Generating Audio from ${here}…`;
+  },
+  {
+    description: 'customFunction.TTS.description',
+    locales: {
+      enUS: {
+        customFunction: {
+          TTS: {
+            description:
+              'Converts text to audio using an external service and provides an audio player. Can take an optional range of cells for an added context.',
           },
         },
       },
