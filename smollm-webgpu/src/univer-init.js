@@ -1,3 +1,4 @@
+// univer-init.js - NO CHANGES NEEDED
 import {
   createUniver,
   defaultTheme,
@@ -11,41 +12,28 @@ import zhCN from '@univerjs/presets/preset-sheets-core/locales/zh-CN';
 import './style.css';
 import '@univerjs/presets/lib/styles/preset-sheets-core.css';
 
-// --- NEW: Export a variable to hold the worker messenger function ---
 export let workerMessenger = null;
-
-// --- NEW: Export a function to set the worker messenger ---
 export function setWorkerMessenger(messenger) {
   workerMessenger = messenger;
 }
 
-// --- NEW: Export univerAPI so it can be used globally (e.g., in App.jsx for cell updates) ---
 export let globalUniverAPI = null;
 
-// --- NEW: Export a variable to hold the cell address from SMOLLM ---
 export let smollmCellAddress = null;
-
-// --- NEW: Export a function to set the smollmCellAddress ---
 export function setSmollmCellAddress(address) {
   smollmCellAddress = address;
 }
 
-// --- NEW: Export for TTS messenger and its setter ---
 export let ttsMessenger = null;
 export function setTTSMessenger(messenger) {
   ttsMessenger = messenger;
 }
 
-// --- NEW: Export for generic MCP messenger and its setter ---
 export let mcpMessenger = null;
 export function setMCPMessenger(messenger) {
   mcpMessenger = messenger;
 }
 
-
-/* ------------------------------------------------------------------ */
-/* 1. Boot‑strap Univer and mount inside <div id="univer"> */
-/* ------------------------------------------------------------------ */
 const { univerAPI } = createUniver({
   locale: LocaleType.EN_US,
   locales: { enUS: merge({}, enUS), zhCN: merge({}, zhCN) },
@@ -53,21 +41,14 @@ const { univerAPI } = createUniver({
   presets: [UniverSheetsCorePreset({ container: 'univer' })],
 });
 
-// --- NEW: Assign univerAPI to the global export ---
 globalUniverAPI = univerAPI;
 
-/* ------------------------------------------------------------------ */
-/* 2. Create a visible 100 × 100 sheet */
-/* ------------------------------------------------------------------ */
 univerAPI.createUniverSheet({
   name: 'Hello Univer',
   rowCount: 100,
   columnCount: 100,
 });
 
-/* ------------------------------------------------------------------ */
-/* 3. Register the TAYLORSWIFT() custom formula */
-/* ------------------------------------------------------------------ */
 const LYRICS = [
   "Cause darling I'm a nightmare dressed like a daydream",
   "We're happy, free, confused and lonely at the same time",
@@ -83,7 +64,7 @@ univerAPI.getFormula().registerFunction(
     const idx = Number(value);
     return idx >= 1 && idx <= LYRICS.length
       ? LYRICS[idx - 1]
-      : LYRICS[Math.floor(Math.random() * LYRICS.length)];
+      : LY2ICS[Math.floor(Math.random() * LYRICS.length)];
   },
   {
     description: 'customFunction.TAYLORSWIFT.description',
@@ -100,33 +81,22 @@ univerAPI.getFormula().registerFunction(
   }
 );
 
-/* ------------------------------------------------------------------ */
-/* 4. Register the SMOLLM() custom formula */
-/* ------------------------------------------------------------------ */
-
 univerAPI.getFormula().registerFunction(
   'SMOLLM',
-  function (prompt = '', secondArg) { // Added secondArg
-    // MUST be `function`, not arrow ⇒ gets context
-    /* 1️⃣  Where am I?  ------------------------------------------------- */
-    const ctx = this.getContext ? this.getContext() : this; // works in ≥0.8.x
-    const row = ctx.row; // 0-based, real row
-    const col = ctx.column; // 0-based, real col
+  function (prompt = '', secondArg) {
+    const ctx = this.getContext ? this.getContext() : this;
+    const row = ctx.row;
+    const col = ctx.column;
+    const here = colToLetters(col + 1) + (row + 1);
 
-    const here = colToLetters(col + 1) + (row + 1); // e.g. "D12"
+    setSmollmCellAddress(here);
 
-    /* 2️⃣  Pass address to the App component via exported variable  ------- */
-    setSmollmCellAddress(here); // Set the exported variable with the cell address
-
-    /* 3️⃣  Process additional context from second argument if it's a range  */
     let additionalContext = '';
     let finalPrompt = prompt;
 
-    // Check if secondArg exists and is a range (Univer typically passes ranges as arrays of arrays)
     if (secondArg && Array.isArray(secondArg) && secondArg.every(row => Array.isArray(row))) {
       try {
         const contextValues = [];
-        // Flatten the array of arrays into a single array of values
         secondArg.forEach(rowArray => {
           rowArray.forEach(cellValue => {
             if (cellValue !== undefined && cellValue !== null && String(cellValue).trim() !== '') {
@@ -136,8 +106,7 @@ univerAPI.getFormula().registerFunction(
         });
 
         if (contextValues.length > 0) {
-          additionalContext = contextValues.join(' '); // Concatenate values with spaces
-          // Prompt engineering: instruct the model to use the context
+          additionalContext = contextValues.join(' ');
           finalPrompt = `Context: ${additionalContext}\n\nTask: ${prompt}`;
           console.log('Processed context from range:', additionalContext);
         }
@@ -147,17 +116,15 @@ univerAPI.getFormula().registerFunction(
       }
     }
 
-    /* 4️⃣  Send prompt to SmolLM worker  -------------------------------- */
     if (!workerMessenger) {
       console.error('AI worker messenger is not set!');
       return 'ERROR: AI not ready';
     }
     workerMessenger({
       type: 'generate',
-      data: [{ role: 'user', content: finalPrompt }], // Send the engineered prompt
+      data: [{ role: 'user', content: finalPrompt }],
     });
 
-    /* 5️⃣  Show something in the formula cell  -------------------------- */
     return `Generating from ${here}…`;
   },
   {
@@ -175,14 +142,9 @@ univerAPI.getFormula().registerFunction(
   }
 );
 
-/* ------------------------------------------------------------------ */
-/* 5. Register the TTS() custom formula */
-/* ------------------------------------------------------------------ */
-
 univerAPI.getFormula().registerFunction(
   'TTS',
   function (prompt = '', secondArg) {
-    // MUST be `function`, not arrow ⇒ gets context
     const ctx = this.getContext ? this.getContext() : this;
     const row = ctx.row;
     const col = ctx.column;
@@ -191,7 +153,6 @@ univerAPI.getFormula().registerFunction(
     let additionalContext = '';
     let finalPrompt = prompt;
 
-    // Process additional context from second argument if it's a range
     if (secondArg && Array.isArray(secondArg) && secondArg.every(row => Array.isArray(row))) {
       try {
         const contextValues = [];
@@ -214,14 +175,15 @@ univerAPI.getFormula().registerFunction(
       }
     }
 
-    // Send prompt to TTS messenger in App.jsx
     if (!ttsMessenger) {
       console.error('TTS messenger is not set!');
       return 'ERROR: TTS not ready';
     }
+    // Pass the tool name directly as the MCP server expects it in the URL path
     ttsMessenger({
+      tool: "YoussefSharawy91_kokoro_mcp_text_to_audio",
       prompt: finalPrompt,
-      cellAddress: here // Pass the cell address for updating
+      cellAddress: here
     });
 
     return `Generating Audio from ${here}…`;
@@ -241,13 +203,9 @@ univerAPI.getFormula().registerFunction(
   }
 );
 
-/* ------------------------------------------------------------------ */
-/* NEW: 6. Register the MCP() custom formula */
-/* ------------------------------------------------------------------ */
-
 univerAPI.getFormula().registerFunction(
   'MCP',
-  function (toolName = '', prompt = '', secondArg) { // toolName, prompt, optional context
+  function (toolName = '', prompt = '', thirdArg) {
     const ctx = this.getContext ? this.getContext() : this;
     const row = ctx.row;
     const col = ctx.column;
@@ -257,10 +215,10 @@ univerAPI.getFormula().registerFunction(
     let finalPrompt = prompt;
 
     // Process additional context from third argument if it's a range
-    if (secondArg && Array.isArray(secondArg) && secondArg.every(row => Array.isArray(row))) {
+    if (thirdArg && Array.isArray(thirdArg) && thirdArg.every(row => Array.isArray(row))) {
       try {
         const contextValues = [];
-        secondArg.forEach(rowArray => {
+        thirdArg.forEach(rowArray => {
           rowArray.forEach(cellValue => {
             if (cellValue !== undefined && cellValue !== null && String(cellValue).trim() !== '') {
               contextValues.push(String(cellValue).trim());
@@ -279,13 +237,12 @@ univerAPI.getFormula().registerFunction(
       }
     }
 
-    // Send request to MCP messenger in App.jsx
     if (!mcpMessenger) {
       console.error('MCP messenger is not set!');
       return 'ERROR: MCP not ready';
     }
     mcpMessenger({
-      tool: toolName,
+      tool: toolName, // Pass the tool name as is
       prompt: finalPrompt,
       cellAddress: here
     });
@@ -307,8 +264,6 @@ univerAPI.getFormula().registerFunction(
   }
 );
 
-
-/* helper: converts 1 → A, 27 → AA, … */
 function colToLetters(n) {
   let s = '';
   while (n > 0) {
