@@ -9,8 +9,8 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
-// --- UPDATED: Import setWorkerMessenger, globalUniverAPI, smollmCellAddress, and setSmollmCellAddress from univer-init.js ---
-import { setWorkerMessenger, globalUniverAPI, smollmCellAddress, setSmollmCellAddress } from './univer-init.js';
+// --- UPDATED: Import setWorkerMessenger, globalUniverAPI, smollmCellAddress, setSmollmCellAddress, and NEW setTTSMessenger from univer-init.js ---
+import { setWorkerMessenger, globalUniverAPI, smollmCellAddress, setSmollmCellAddress, setTTSMessenger } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
 const STICKY_SCROLL_THRESHOLD = 120;
@@ -43,11 +43,20 @@ function App() {
   // --- NEW: State to hold the target cell address from SMOLLM ---
   const [targetCell, setTargetCell] = useState(null);
 
+  // --- NEW: State for TTS audio player ---
+  const [audioUrl, setAudioUrl] = useState(null);
+  const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
+  const [ttsErrorMessage, setTtsErrorMessage] = useState(null); // For TTS specific errors
+
+
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
     setIsRunning(true); // Sets isRunning to true when user hits enter
     setInput("");
+    // Clear any previous audio when a new chat message is sent
+    setAudioUrl(null);
+    setTtsErrorMessage(null);
   }
 
   function onInterrupt() {
@@ -90,7 +99,7 @@ function App() {
       } else {
         console.error("AI worker not ready for spreadsheet request. Model not loaded.");
         // --- FIX: Use targetCell for the error message, or a default if not available ---
-        const cellToUpdate = targetCell || "A3"; // Fallback to A3 if targetCell isn't set yet
+        const cellToUpdate = smollmCellAddress || "A3"; // Fallback if smollmCellAddress isn't set yet
         globalUniverAPI
           ?.getActiveWorkbook()
           ?.getActiveSheet()
@@ -98,6 +107,94 @@ function App() {
           .setValue("ERROR: Model not loaded."); // More specific error message
       }
     });
+
+    // --- NEW: Provide the TTS messenger to univer-init.js ---
+    const ttsApiCall = async ({ prompt, cellAddress }) => {
+      setIsGeneratingAudio(true);
+      setAudioUrl(null); // Clear previous audio
+      setTtsErrorMessage(null); // Clear previous error
+
+      // Update the Univer cell immediately with pending status
+      globalUnverAPI
+        ?.getActiveWorkbook()
+        ?.getActiveSheet()
+        ?.getRange(cellAddress)
+        .setValue("Generating Audio...");
+
+      try {
+        const response = await fetch("https://youssefsharawy91-kokoro-mcp.hf.space/gradio_api/mcp/sse", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // Add any necessary authentication headers if the MCP requires it
+            // For example, if it requires a Hugging Face token:
+            // "Authorization": `Bearer YOUR_HF_TOKEN_HERE`,
+          },
+          body: JSON.stringify({
+            "tool": "YoussefSharawy91_kokoro_mcp_text_to_audio",
+            "arguments": { "text": prompt }
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status} - ${response.statusText}`);
+        }
+
+        // --- Handling SSE stream ---
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let audioFound = false;
+        let completeResponse = ''; // Accumulate SSE data for debugging
+
+        while (true) {
+          const { done, value } = await reader.read();
+          const chunk = decoder.decode(value, { stream: true });
+          completeResponse += chunk; // For debugging
+
+          if (done) break;
+
+          const lines = chunk.split('\n').filter(line => line.startsWith('data:'));
+
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line.substring(5)); // Remove 'data: ' prefix
+              console.log("Received TTS data chunk:", data);
+
+              if (data.type === "tool_output" && data.content && data.content.audio_url) {
+                setAudioUrl(data.content.audio_url);
+                audioFound = true;
+                globalUniverAPI
+                  ?.getActiveWorkbook()
+                  ?.getActiveSheet()
+                  ?.getRange(cellAddress)
+                  .setValue("Audio Generated!");
+                break; // Found the audio URL, no need to process further lines
+              }
+            } catch (e) {
+              console.error("Error parsing SSE line:", e, line);
+              // Continue to next line if parsing fails
+            }
+          }
+          if (audioFound) break; // If audio URL is found, stop reading the stream
+        }
+
+        if (!audioFound) {
+          throw new Error("No audio URL found in the TTS response. Full SSE response: " + completeResponse);
+        }
+
+      } catch (err) {
+        console.error("Error generating audio:", err);
+        setTtsErrorMessage(`TTS Error: ${err.message}`);
+        globalUniverAPI
+          ?.getActiveWorkbook()
+          ?.getActiveSheet()
+          ?.getRange(cellAddress)
+          .setValue(`TTS ERROR: ${err.message}`);
+      } finally {
+        setIsGeneratingAudio(false);
+      }
+    };
+    setTTSMessenger(ttsApiCall); // Set the messenger for univer-init.js
 
     // Create a callback function for messages from the worker thread.
     const onMessageReceived = (e) => {
@@ -188,6 +285,7 @@ function App() {
     };
     const onErrorReceived = (e) => {
       console.error("Worker error:", e);
+      setError("Worker error: " + (e.message || e.error));
     };
 
     // Attach the callback function as an event listener.
@@ -370,6 +468,8 @@ function App() {
                       onClick={() => {
                         worker.current.postMessage({ type: "reset" });
                         setMessages([]);
+                        setAudioUrl(null); // Clear audio on chat reset
+                        setTtsErrorMessage(null); // Clear TTS error on chat reset
                       }}
                     >
                       Reset
@@ -379,6 +479,23 @@ function App() {
               </>
             )}
           </p>
+        </div>
+      )}
+
+      {/* NEW: Audio Player and TTS Status */}
+      {(audioUrl || isGeneratingAudio || ttsErrorMessage) && (
+        <div className="w-full max-w-[600px] mx-auto text-center mt-2 mb-3">
+          {isGeneratingAudio && (
+            <p className="text-blue-500">Generating audio...</p>
+          )}
+          {ttsErrorMessage && (
+            <p className="text-red-500">{ttsErrorMessage}</p>
+          )}
+          {audioUrl && (
+            <audio controls src={audioUrl} className="w-full">
+              Your browser does not support the audio element.
+            </audio>
+          )}
         </div>
       )}
 
@@ -407,7 +524,7 @@ function App() {
         />
         {isRunning ? (
           <div className="cursor-pointer" onClick={onInterrupt}>
-            <StopIcon className="h-8 w-8 p-1 rounded-md text-gray-800 dark:text-gray-100 absolute right-3 bottom-3" />
+            <StopIcon className="h-8 w-8 p-1 rounded-md text-gray-800 dark:text-100 absolute right-3 bottom-3" />
           </div>
         ) : input.length > 0 ? (
           <div className="cursor-pointer" onClick={() => onEnter(input)}>
