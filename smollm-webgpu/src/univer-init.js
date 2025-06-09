@@ -36,6 +36,13 @@ export function setTTSMessenger(messenger) {
   ttsMessenger = messenger;
 }
 
+// --- NEW: Export for generic MCP messenger and its setter ---
+export let mcpMessenger = null;
+export function setMCPMessenger(messenger) {
+  mcpMessenger = messenger;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* 1. Boot‑strap Univer and mount inside <div id="univer"> */
 /* ------------------------------------------------------------------ */
@@ -169,7 +176,7 @@ univerAPI.getFormula().registerFunction(
 );
 
 /* ------------------------------------------------------------------ */
-/* NEW: 5. Register the TTS() custom formula */
+/* 5. Register the TTS() custom formula */
 /* ------------------------------------------------------------------ */
 
 univerAPI.getFormula().registerFunction(
@@ -233,6 +240,73 @@ univerAPI.getFormula().registerFunction(
     },
   }
 );
+
+/* ------------------------------------------------------------------ */
+/* NEW: 6. Register the MCP() custom formula */
+/* ------------------------------------------------------------------ */
+
+univerAPI.getFormula().registerFunction(
+  'MCP',
+  function (toolName = '', prompt = '', secondArg) { // toolName, prompt, optional context
+    const ctx = this.getContext ? this.getContext() : this;
+    const row = ctx.row;
+    const col = ctx.column;
+    const here = colToLetters(col + 1) + (row + 1);
+
+    let additionalContext = '';
+    let finalPrompt = prompt;
+
+    // Process additional context from third argument if it's a range
+    if (secondArg && Array.isArray(secondArg) && secondArg.every(row => Array.isArray(row))) {
+      try {
+        const contextValues = [];
+        secondArg.forEach(rowArray => {
+          rowArray.forEach(cellValue => {
+            if (cellValue !== undefined && cellValue !== null && String(cellValue).trim() !== '') {
+              contextValues.push(String(cellValue).trim());
+            }
+          });
+        });
+
+        if (contextValues.length > 0) {
+          additionalContext = contextValues.join(' ');
+          finalPrompt = `Context: ${additionalContext}\n\nTask: ${prompt}`;
+          console.log('Processed MCP context from range:', additionalContext);
+        }
+      } catch (e) {
+        console.error("Error processing MCP context range:", e);
+        finalPrompt = `Error reading MCP context range. Original prompt: ${prompt}`;
+      }
+    }
+
+    // Send request to MCP messenger in App.jsx
+    if (!mcpMessenger) {
+      console.error('MCP messenger is not set!');
+      return 'ERROR: MCP not ready';
+    }
+    mcpMessenger({
+      tool: toolName,
+      prompt: finalPrompt,
+      cellAddress: here
+    });
+
+    return `Calling MCP ${toolName.split('_').pop()} from ${here}…`;
+  },
+  {
+    description: 'customFunction.MCP.description',
+    locales: {
+      enUS: {
+        customFunction: {
+          MCP: {
+            description:
+              'Calls a specified MCP tool with a prompt and an optional range of cells for context. Output will be displayed in the UI (e.g., audio player) or cell.',
+          },
+        },
+      },
+    },
+  }
+);
+
 
 /* helper: converts 1 → A, 27 → AA, … */
 function colToLetters(n) {
