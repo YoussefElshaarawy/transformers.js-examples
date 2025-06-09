@@ -32,26 +32,22 @@ const EXAMPLES = [
 ];
 
 function App() {
-  // Create a reference to the worker object.
   const worker = useRef(null);
-  const sentenceRef = useRef([]);    // keeps the running words without forcing re-renders
+  const sentenceRef = useRef([]);
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
 
-  // Model loading and progress
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
 
-  // Inputs and outputs
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [tps, setTps] = useState(null);
   const [numTokens, setNumTokens] = useState(null);
 
-  // State to hold the target cell address from SMOLLM
   const [targetCell, setTargetCell] = useState(null);
 
   // State for MCP/TTS audio and status
@@ -64,8 +60,8 @@ function App() {
     setTps(null);
     setIsRunning(true);
     setInput("");
-    setAudioUrl(null);
-    setMcpStatusMessage(null);
+    setAudioUrl(null); // Clear any previous audio
+    setMcpStatusMessage(null); // Clear any previous MCP status/error
     setIsProcessingMcp(false);
   }
 
@@ -108,9 +104,10 @@ function App() {
       }
     });
 
+    // --- NEW: Generic MCP Request Handler (Updated for form-data and binary response) ---
     const handleMcpRequest = async ({ tool, prompt, cellAddress }) => {
       setIsProcessingMcp(true);
-      setAudioUrl(null);
+      setAudioUrl(null); // Clear previous audio
       setMcpStatusMessage(`Calling ${tool.split('_').pop()}...`);
 
       globalUniverAPI
@@ -120,69 +117,40 @@ function App() {
         .setValue(`Processing ${tool.split('_').pop()}...`);
 
       try {
-        const response = await fetch("https://youssefsharawy91-kokoro-mcp.hf.space/gradio_api/mcp/sse", {
+        // Construct the specific endpoint URL for the tool
+        // Based on your curl/python example, the tool name is part of the URL path
+        const mcpApiUrl = `https://youssefsharawy91-kokoro-mcp.hf.space/gradio_api/${tool}`;
+
+        const formData = new FormData();
+        formData.append("text", prompt); // Append the prompt as 'text' field
+
+        const response = await fetch(mcpApiUrl, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            // IMPORTANT: Add your Hugging Face API token if the Space requires authentication.
-            // Example: "Authorization": `Bearer YOUR_HF_TOKEN_HERE`,
-          },
-          body: JSON.stringify({
-            "tool": tool,
-            "arguments": { "text": prompt }
-          }),
+          // IMPORTANT: Do NOT set Content-Type header for FormData.
+          // The browser automatically sets it to multipart/form-data with the correct boundary.
+          body: formData,
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP error! Status: ${response.status} - ${response.statusText}`);
+          const errorText = await response.text(); // Read error response text for more detail
+          throw new Error(`HTTP error! Status: ${response.status} - ${response.statusText}. Response: ${errorText}`);
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let audioOutputFound = false;
-        let finalCellContent = `No specific output found for ${tool.split('_').pop()}.`;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          const chunk = decoder.decode(value, { stream: true });
-
-          const lines = chunk.split('\n').filter(line => line.startsWith('data:'));
-
-          for (const line of lines) {
-            try {
-              const data = JSON.parse(line.substring(5));
-              console.log(`Received MCP data chunk for tool ${tool}:`, data);
-
-              if (data.type === "tool_output" && data.content) {
-                if (data.content.audio_url) {
-                  setAudioUrl(data.content.audio_url);
-                  setMcpStatusMessage("Audio Generated!");
-                  finalCellContent = "Audio Generated!";
-                  audioOutputFound = true;
-                  break;
-                } else if (data.content.text) {
-                  setMcpStatusMessage(`Text output received from ${tool.split('_').pop()}:`);
-                  finalCellContent = data.content.text;
-                  audioOutputFound = true;
-                  break;
-                }
-              }
-            } catch (e) {
-              console.error("Error parsing SSE line:", e, line);
-            }
-          }
-          if (audioOutputFound) break;
-          if (done) break;
-        }
-
-        globalUniverAPI
-          ?.getActiveWorkbook()
-          ?.getActiveSheet()
-          ?.getRange(cellAddress)
-          .setValue(finalCellContent);
-
-        if (!audioOutputFound) {
-          setMcpStatusMessage(`No specific audio/text output found from ${tool.split('_').pop()}.`);
+        // Assume response is directly the audio binary (Blob)
+        const audioBlob = await response.blob();
+        if (audioBlob.type.startsWith('audio/')) {
+          const newAudioUrl = URL.createObjectURL(audioBlob);
+          setAudioUrl(newAudioUrl);
+          setMcpStatusMessage("Audio Generated!");
+          globalUniverAPI
+            ?.getActiveWorkbook()
+            ?.getActiveSheet()
+            ?.getRange(cellAddress)
+            .setValue("Audio Generated!");
+        } else {
+          // If it's not audio, it might be an error message or unexpected response
+          const responseText = await audioBlob.text(); // Try to read as text
+          throw new Error(`Unexpected response type from MCP server: ${audioBlob.type}. Content: ${responseText.substring(0, 200)}...`);
         }
 
       } catch (err) {
@@ -201,8 +169,7 @@ function App() {
     setTTSMessenger(({ prompt, cellAddress }) =>
       handleMcpRequest({ tool: "YoussefSharawy91_kokoro_mcp_text_to_audio", prompt, cellAddress })
     );
-    setMCPMessenger(handleMcpRequest);
-
+    setMCPMessenger(handleMcpRequest); // This will now use the generic handler for any MCP tool
 
     const onMessageReceived = (e) => {
       switch (e.data.status) {
@@ -244,8 +211,12 @@ function App() {
     return () => {
       worker.current.removeEventListener("message", onMessageReceived);
       worker.current.removeEventListener("error", onErrorReceived);
+      // Clean up the object URL when component unmounts or audio changes
+      if (audioUrl) {
+          URL.revokeObjectURL(audioUrl);
+      }
     };
-  }, [status, targetCell]);
+  }, [status, targetCell, audioUrl]); // Added audioUrl to dependencies for cleanup
 
   useEffect(() => {
     if (messages.filter((x) => x.role === "user").length === 0) { return; }
@@ -410,7 +381,7 @@ function App() {
         )}
       </div>
 
-      {/* NEW: Audio Player and MCP Status - MOVED & NOW USING CUSTOM COMPONENT */}
+      {/* Audio Player and MCP Status */}
       {(audioUrl || isProcessingMcp || mcpStatusMessage) && (
         <div className="w-full max-w-[600px] mx-auto text-center mt-2 mb-3 px-4">
           {isProcessingMcp && (
@@ -421,24 +392,16 @@ function App() {
           )}
           {audioUrl && (
             <AudioPlayer
-              autoPlay={true} // Auto-play when audioUrl is set
+              autoPlay={true}
               src={audioUrl}
-              onPlay={e => console.log("onPlay")} // Optional: add handlers
-              // Add other props for styling or functionality
-              // For example, to enable download:
-              // customControls={[
-              //   AudioPlayer.playPauseOrDownload, // This specific prop isn't built-in, but examples exist
-              //   // For a download button, you typically add a custom button with an <a> tag
-              // ]}
-              layout="horizontal-light" // Another layout option
-              showDownloadProgress={true} // Show download progress
+              layout="horizontal-light"
+              showDownloadProgress={true}
               customAdditionalControls={[
-                // A common way to add a download button
-                <a key="download-btn" href={audioUrl} download="generated_audio.wav" className="rhap_download-btn">
+                <a key="download-btn" href={audioUrl} download="generated_audio.wav" className="rhap_download-btn text-xs px-2 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 ml-2">
                   Download
                 </a>
               ]}
-              className="rhap_theme-light" // Apply light theme, you can customize in CSS
+              className="rhap_theme-light"
             />
           )}
         </div>
