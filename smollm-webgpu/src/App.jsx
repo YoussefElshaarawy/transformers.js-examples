@@ -9,14 +9,18 @@ import ArrowRightIcon from "./components/icons/ArrowRightIcon";
 import StopIcon from "./components/icons/StopIcon";
 import Progress from "./components/Progress";
 
+// --- NEW IMPORTS for Custom Audio Player ---
+import AudioPlayer from 'react-h5-audio-player';
+import 'react-h5-audio-player/lib/styles.css'; // Default styles
+
 // --- UPDATED: Import ALL messengers and other exports from univer-init.js ---
 import {
   setWorkerMessenger,
   globalUniverAPI,
   smollmCellAddress,
   setSmollmCellAddress,
-  setTTSMessenger, // Existing TTS messenger
-  setMCPMessenger, // NEW MCP messenger
+  setTTSMessenger,
+  setMCPMessenger,
 } from './univer-init.js';
 
 const IS_WEBGPU_AVAILABLE = !!navigator.gpu;
@@ -39,7 +43,7 @@ function App() {
   const [error, setError] = useState(null);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressItems, setProgressItems] = useState([]);
-  const [isRunning, setIsRunning] = useState(false); // Make sure this is initially false
+  const [isRunning, setIsRunning] = useState(false);
 
   // Inputs and outputs
   const [input, setInput] = useState("");
@@ -50,20 +54,19 @@ function App() {
   // State to hold the target cell address from SMOLLM
   const [targetCell, setTargetCell] = useState(null);
 
-  // --- NEW: State for MCP/TTS audio and status ---
+  // State for MCP/TTS audio and status
   const [audioUrl, setAudioUrl] = useState(null);
-  const [isProcessingMcp, setIsProcessingMcp] = useState(false); // Renamed from isGeneratingAudio
-  const [mcpStatusMessage, setMcpStatusMessage] = useState(null); // General status/error message for MCP
+  const [isProcessingMcp, setIsProcessingMcp] = useState(false);
+  const [mcpStatusMessage, setMcpStatusMessage] = useState(null);
 
   function onEnter(message) {
     setMessages((prev) => [...prev, { role: "user", content: message }]);
     setTps(null);
     setIsRunning(true);
     setInput("");
-    // Clear any previous MCP/TTS results when a new chat message is sent
     setAudioUrl(null);
     setMcpStatusMessage(null);
-    setIsProcessingMcp(false); // Ensure this is false on new chat
+    setIsProcessingMcp(false);
   }
 
   function onInterrupt() {
@@ -87,10 +90,9 @@ function App() {
       worker.current = new Worker(new URL("./worker.js", import.meta.url), {
         type: "module",
       });
-      worker.current.postMessage({ type: "check" }); // Do a feature check
+      worker.current.postMessage({ type: "check" });
     }
 
-    // --- Provide the worker messenger to univer-init.js for SMOLLM ---
     setWorkerMessenger((message) => {
       if (worker.current && status === "ready") {
         worker.current.postMessage(message);
@@ -106,13 +108,11 @@ function App() {
       }
     });
 
-    // --- NEW: Generic MCP Request Handler ---
     const handleMcpRequest = async ({ tool, prompt, cellAddress }) => {
       setIsProcessingMcp(true);
-      setAudioUrl(null); // Clear previous audio
-      setMcpStatusMessage(`Calling ${tool.split('_').pop()}...`); // Initial status message
+      setAudioUrl(null);
+      setMcpStatusMessage(`Calling ${tool.split('_').pop()}...`);
 
-      // Update the Univer cell immediately with pending status
       globalUniverAPI
         ?.getActiveWorkbook()
         ?.getActiveSheet()
@@ -129,7 +129,7 @@ function App() {
           },
           body: JSON.stringify({
             "tool": tool,
-            "arguments": { "text": prompt } // Assuming 'text' is the common argument key for this MCP tool
+            "arguments": { "text": prompt }
           }),
         });
 
@@ -140,7 +140,7 @@ function App() {
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
         let audioOutputFound = false;
-        let finalCellContent = `No specific output found for ${tool.split('_').pop()}.`; // Default if nothing specific extracted
+        let finalCellContent = `No specific output found for ${tool.split('_').pop()}.`;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -150,7 +150,7 @@ function App() {
 
           for (const line of lines) {
             try {
-              const data = JSON.parse(line.substring(5)); // Remove 'data: ' prefix
+              const data = JSON.parse(line.substring(5));
               console.log(`Received MCP data chunk for tool ${tool}:`, data);
 
               if (data.type === "tool_output" && data.content) {
@@ -159,29 +159,22 @@ function App() {
                   setMcpStatusMessage("Audio Generated!");
                   finalCellContent = "Audio Generated!";
                   audioOutputFound = true;
-                  break; // Audio URL found, stop processing further lines
-                } else if (data.content.text) { // Handle generic text output from MCP
+                  break;
+                } else if (data.content.text) {
                   setMcpStatusMessage(`Text output received from ${tool.split('_').pop()}:`);
                   finalCellContent = data.content.text;
-                  // For text output, you might want to display it in a separate UI element
-                  // or just update the cell. For now, it updates the cell.
-                  audioOutputFound = true; // Mark as having received *some* output
+                  audioOutputFound = true;
                   break;
                 }
               }
-              // You can add more conditions here to handle other 'data.type' values
-              // like 'tool_code', 'thought', 'tool_input', etc., if you want to display
-              // intermediate steps from the MCP server.
             } catch (e) {
               console.error("Error parsing SSE line:", e, line);
-              // Continue to next line if parsing fails
             }
           }
-          if (audioOutputFound) break; // If the expected output is found, stop reading the stream
-          if (done) break; // End of stream
+          if (audioOutputFound) break;
+          if (done) break;
         }
 
-        // Final update to the cell with the extracted content or default message
         globalUniverAPI
           ?.getActiveWorkbook()
           ?.getActiveSheet()
@@ -205,12 +198,9 @@ function App() {
       }
     };
 
-    // --- Set up TTS and MCP messengers for univer-init.js ---
-    // TTS formula will always call 'YoussefSharawy91_kokoro_mcp_text_to_audio' tool
     setTTSMessenger(({ prompt, cellAddress }) =>
       handleMcpRequest({ tool: "YoussefSharawy91_kokoro_mcp_text_to_audio", prompt, cellAddress })
     );
-    // MCP formula can call any tool based on its first argument
     setMCPMessenger(handleMcpRequest);
 
 
@@ -364,8 +354,8 @@ function App() {
                       onClick={() => {
                         worker.current.postMessage({ type: "reset" });
                         setMessages([]);
-                        setAudioUrl(null); // Clear audio on chat reset
-                        setMcpStatusMessage(null); // Clear MCP status on chat reset
+                        setAudioUrl(null);
+                        setMcpStatusMessage(null);
                       }}
                     >
                       Reset
@@ -420,9 +410,9 @@ function App() {
         )}
       </div>
 
-      {/* NEW: Audio Player and MCP Status - MOVED HERE */}
+      {/* NEW: Audio Player and MCP Status - MOVED & NOW USING CUSTOM COMPONENT */}
       {(audioUrl || isProcessingMcp || mcpStatusMessage) && (
-        <div className="w-full max-w-[600px] mx-auto text-center mt-2 mb-3 px-4"> {/* Added px-4 for padding */}
+        <div className="w-full max-w-[600px] mx-auto text-center mt-2 mb-3 px-4">
           {isProcessingMcp && (
             <p className="text-blue-500">{mcpStatusMessage}</p>
           )}
@@ -430,9 +420,26 @@ function App() {
             <p className="text-red-500">{mcpStatusMessage}</p>
           )}
           {audioUrl && (
-            <audio controls src={audioUrl} className="w-full">
-              Your browser does not support the audio element.
-            </audio>
+            <AudioPlayer
+              autoPlay={true} // Auto-play when audioUrl is set
+              src={audioUrl}
+              onPlay={e => console.log("onPlay")} // Optional: add handlers
+              // Add other props for styling or functionality
+              // For example, to enable download:
+              // customControls={[
+              //   AudioPlayer.playPauseOrDownload, // This specific prop isn't built-in, but examples exist
+              //   // For a download button, you typically add a custom button with an <a> tag
+              // ]}
+              layout="horizontal-light" // Another layout option
+              showDownloadProgress={true} // Show download progress
+              customAdditionalControls={[
+                // A common way to add a download button
+                <a key="download-btn" href={audioUrl} download="generated_audio.wav" className="rhap_download-btn">
+                  Download
+                </a>
+              ]}
+              className="rhap_theme-light" // Apply light theme, you can customize in CSS
+            />
           )}
         </div>
       )}
